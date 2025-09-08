@@ -44,7 +44,12 @@ class RebalanceCommand(EventCommand):
                     error=f"No strategy_name found in event payload for account {self.event.account_id}"
                 )
             
-            account_config = EventAccountConfig.from_dict(self.event.payload)
+            # Merge event account_id with payload data
+            config_data = {
+                'account_id': self.event.account_id,
+                **self.event.payload
+            }
+            account_config = EventAccountConfig.from_dict(config_data)
             
             app_logger.log_info("Using MKT order type (only type supported)", self.event)
             

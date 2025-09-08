@@ -128,11 +128,10 @@ class DataCollectorService:
         try:
             app_logger.log_debug(f"Collecting data for account {account_id}")
             
-            # Use portfolio() method to get complete position data with market prices
-            portfolio_items = await self.ibkr_client.get_portfolio_items(account_id)
-            net_liq = await self.ibkr_client.get_account_value(account_id, "NetLiquidation")
+            # Get complete portfolio snapshot with current market prices 
+            portfolio_snapshot = await self.ibkr_client.get_portfolio_snapshot(account_id)
             
-            # Get P&L data directly from IBKR
+            # Get P&L data
             pnl_data = await self.ibkr_client.get_account_pnl(account_id)
             todays_pnl = pnl_data["daily_pnl"]
             total_upnl = pnl_data["unrealized_pnl"]
@@ -141,40 +140,29 @@ class DataCollectorService:
             account_config = self._accounts.get(account_id, {})
             is_ira = account_config.get("replacement_set") == "ira"
             
-            # Get cash balance
-            cash_balance = await self.ibkr_client.get_account_value(account_id, "TotalCashBalance")
-            
-            # Prepare position data
+            # Prepare position data from portfolio snapshot
             positions = []
             invested_amount = 0.0
             
-            if portfolio_items:
-                for item in portfolio_items:
-                    symbol = item['symbol']
-                    position = item['position']
-                    market_price = item['market_price']
-                    market_value = item['market_value']
-                    avg_cost = item['avg_cost']
+            for portfolio_pos in portfolio_snapshot.positions:
+                if portfolio_pos.shares != 0:
+                    cost_basis = portfolio_pos.average_cost * abs(portfolio_pos.shares)
+                    unrealized_pnl_percent = (portfolio_pos.unrealized_pnl / cost_basis * 100) if cost_basis != 0 else 0
                     
-                    if position != 0:
-                        cost_basis = avg_cost * abs(position)
-                        unrealized_pnl = item['unrealized_pnl']
-                        unrealized_pnl_percent = (unrealized_pnl / cost_basis * 100) if cost_basis != 0 else 0
-                        
-                        position_data = PositionData(
-                            symbol=symbol,
-                            position=position,
-                            market_price=market_price,
-                            market_value=market_value,
-                            avg_cost=avg_cost,
-                            cost_basis=cost_basis,
-                            unrealized_pnl=unrealized_pnl,
-                            unrealized_pnl_percent=unrealized_pnl_percent,
-                            weight=(market_value / net_liq * 100) if net_liq > 0 else 0
-                        )
-                        
-                        positions.append(position_data)
-                        invested_amount += market_value
+                    position_data = PositionData(
+                        symbol=portfolio_pos.symbol,
+                        position=portfolio_pos.shares,
+                        market_price=portfolio_pos.market_price,
+                        market_value=portfolio_pos.market_value,
+                        avg_cost=portfolio_pos.average_cost,
+                        cost_basis=cost_basis,
+                        unrealized_pnl=portfolio_pos.unrealized_pnl,
+                        unrealized_pnl_percent=unrealized_pnl_percent,
+                        weight=(portfolio_pos.market_value / portfolio_snapshot.total_value * 100) if portfolio_snapshot.total_value > 0 else 0
+                    )
+                    
+                    positions.append(position_data)
+                    invested_amount += portfolio_pos.market_value
             
             # Create strongly typed AccountData
             account_data = AccountData(
@@ -182,14 +170,14 @@ class DataCollectorService:
                 account_name=account_config.get("name", account_id),
                 strategy_name=account_config.get("strategy"),
                 is_ira=is_ira,
-                net_liquidation=net_liq,
-                cash_balance=cash_balance,
+                net_liquidation=portfolio_snapshot.total_value,
+                cash_balance=portfolio_snapshot.cash_balance,
                 todays_pnl=todays_pnl,
-                todays_pnl_percent=(todays_pnl / (net_liq - todays_pnl) * 100) if net_liq > todays_pnl else 0,
+                todays_pnl_percent=(todays_pnl / (portfolio_snapshot.total_value - todays_pnl) * 100) if portfolio_snapshot.total_value > todays_pnl else 0,
                 total_upnl=total_upnl,
-                total_upnl_percent=(total_upnl / net_liq * 100) if net_liq > 0 else 0,
+                total_upnl_percent=(total_upnl / portfolio_snapshot.total_value * 100) if portfolio_snapshot.total_value > 0 else 0,
                 invested_amount=invested_amount,
-                cash_percent=((net_liq - invested_amount) / net_liq * 100) if net_liq > 0 else 0,
+                cash_percent=((portfolio_snapshot.total_value - invested_amount) / portfolio_snapshot.total_value * 100) if portfolio_snapshot.total_value > 0 else 0,
                 last_updated=datetime.now(timezone.utc),
                 positions=positions
             )

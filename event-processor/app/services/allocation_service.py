@@ -3,6 +3,7 @@ import aiohttp
 from typing import List, Dict
 from app.config import config
 from app.models.account_config import EventAccountConfig
+from app.models.rebalance_data import TargetAllocation
 from app.logger import AppLogger
 from app.services.replacement_service import ReplacementService
 
@@ -12,7 +13,7 @@ app_logger = AppLogger(__name__)
 class AllocationService:
     def __init__(self):
         self.replacement_service = ReplacementService()
-    async def get_allocations(self, account_config: EventAccountConfig, event=None) -> List[Dict[str, float]]:        
+    async def get_allocations(self, account_config: EventAccountConfig, event=None) -> List[TargetAllocation]:        
         allocations_url = f"{config.allocations_base_url}/{account_config.strategy_name}/allocations"
         
         api_key = config.allocations_api_key
@@ -62,10 +63,10 @@ class AllocationService:
                         if allocation < 0 or allocation > 1:
                             raise ValueError(f"Allocation for {symbol} must be between 0 and 1")
                         
-                        allocations.append({
-                            'symbol': symbol,
-                            'allocation': allocation
-                        })
+                        allocations.append(TargetAllocation(
+                            symbol=symbol,
+                            allocation_percent=allocation
+                        ))
                         
                         total_allocation += allocation
                     

@@ -2,7 +2,6 @@ import asyncio
 import math
 import random
 import json
-# Redis operations are handled via RedisDataService
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional, Tuple, Any
@@ -10,6 +9,7 @@ from ib_async import IB, Stock, MarketOrder, Contract
 from ib_async.contract import ContractDetails
 from app.config import config
 from app.logger import AppLogger
+from app.models.rebalance_data import AccountSnapshot, CurrentPosition, PortfolioSnapshot, PortfolioPosition
 
 app_logger = AppLogger(__name__)
 class IBKRClient:
@@ -178,88 +178,111 @@ class IBKRClient:
                 "realized_pnl": 0.0
             }
     
-    async def get_positions(self, account_id: str, event=None) -> List[Dict]:
+    async def get_account_snapshot(self, account_id: str, event=None) -> AccountSnapshot:
+        """Get complete account snapshot with positions and account value"""
         if not await self.ensure_connected():
             raise Exception("Unable to establish IBKR connection")
         
         try:
-            app_logger.log_debug(f"Requesting positions for account {account_id}", event)
-            positions = await self.ib.reqPositionsAsync()
+            app_logger.log_debug(f"Getting account snapshot for {account_id}", event)
             
-            result = []
-            for position in positions:
+            # Get account value
+            total_value = await self.get_account_value(account_id, event=event)
+            
+            # Get positions
+            positions_data = await self.ib.reqPositionsAsync()
+            positions = []
+            for position in positions_data:
                 if position.account == account_id and position.position != 0:
                     # Calculate market value if not available
                     market_value = getattr(position, 'marketValue', position.position * position.avgCost)
                     
-                    result.append({
-                        'symbol': position.contract.symbol,
-                        'position': position.position,
-                        'market_value': market_value,
-                        'avg_cost': position.avgCost
-                    })
+                    positions.append(CurrentPosition(
+                        symbol=position.contract.symbol,
+                        shares=int(position.position),
+                        market_value=float(market_value),
+                        average_cost=float(position.avgCost)
+                    ))
             
-            app_logger.log_debug(f"Found {len(result)} positions for account {account_id}", event)
-            return result
+            # Get cash balance
+            cash_balance = await self.get_cash_balance(account_id)
+            
+            app_logger.log_debug(f"Account snapshot: {len(positions)} positions, total value: ${total_value:.2f}", event)
+            
+            return AccountSnapshot(
+                account_id=account_id,
+                total_value=total_value,
+                positions=positions,
+                cash_balance=cash_balance
+            )
             
         except Exception as e:
-            app_logger.log_error(f"Failed to get positions: {e}", event)
+            app_logger.log_error(f"Failed to get account snapshot: {e}", event)
             raise
-    
-    async def get_portfolio_items(self, account_id: str, event=None) -> List[Dict]:
-        """Get portfolio items using existing position and price fetching methods"""
+
+    async def get_portfolio_snapshot(self, account_id: str, event=None) -> PortfolioSnapshot:
+        """Get complete portfolio snapshot with current market prices using optimal 3-call strategy"""
         if not await self.ensure_connected():
             raise Exception("Unable to establish IBKR connection")
         
         try:
-            # Get basic position data
-            positions = await asyncio.wait_for(
-                self.ib.reqPositionsAsync(),
-                timeout=30.0
-            )
+            app_logger.log_debug(f"Getting portfolio snapshot for {account_id}", event)
             
-            # Filter positions for this account
-            account_positions = [p for p in positions if p.account == account_id and p.position != 0]
+            # Use working methods for account data - prioritize reliability over call count optimization
+            total_value = await self.get_account_value(account_id, event=event)
+            cash_balance = await self.get_cash_balance(account_id)
+            
+            # CALL 2: Get all positions for the account
+            positions_data = await self.ib.reqPositionsAsync()
+            account_positions = [p for p in positions_data if p.account == account_id and p.position != 0]
             
             if not account_positions:
-                return []
+                return PortfolioSnapshot(
+                    account_id=account_id,
+                    total_value=total_value,
+                    cash_balance=cash_balance,
+                    positions=[]
+                )
             
-            # Extract symbols and get current market prices using existing method
+            # CALL 3: Get current market prices for all position symbols
             symbols = [pos.contract.symbol for pos in account_positions]
+            market_prices = await self.get_multiple_market_prices(symbols, event)
             
-            try:
-                prices = await self.get_multiple_market_prices(symbols, event)
-            except Exception as e:
-                app_logger.log_warning(f"Could not get market prices: {e}", event)
-                prices = {}
-            
-            result = []
+            # Build portfolio positions with current market data
+            positions = []
             for position in account_positions:
                 symbol = position.contract.symbol
-                current_price = prices.get(symbol, 0.0)
+                shares = float(position.position)
+                average_cost = float(position.avgCost)
+                market_price = market_prices.get(symbol, 0.0)
                 
-                # Calculate market value and P&L
-                market_value = abs(position.position) * current_price
-                cost_basis = abs(position.position) * position.avgCost
+                # Calculate market value and P&L with current prices
+                market_value = abs(shares) * market_price
+                cost_basis = abs(shares) * average_cost
                 unrealized_pnl = market_value - cost_basis
                 
-                result.append({
-                    'symbol': symbol,
-                    'position': position.position,
-                    'market_value': market_value,
-                    'market_price': current_price, 
-                    'avg_cost': position.avgCost,
-                    'unrealized_pnl': unrealized_pnl,
-                    'realized_pnl': 0.0
-                })
+                positions.append(PortfolioPosition(
+                    symbol=symbol,
+                    shares=shares,
+                    market_price=market_price,
+                    market_value=market_value,
+                    average_cost=average_cost,
+                    unrealized_pnl=unrealized_pnl
+                ))
             
-            return result
+            app_logger.log_debug(f"Portfolio snapshot: {len(positions)} positions, total value: ${total_value:.2f}", event)
+            
+            return PortfolioSnapshot(
+                account_id=account_id,
+                total_value=total_value,
+                cash_balance=cash_balance,
+                positions=positions
+            )
             
         except Exception as e:
-            app_logger.log_error(f"Failed to get portfolio items for {account_id}: {str(e)} - {type(e).__name__}", event)
-            import traceback
-            app_logger.log_error(f"Traceback: {traceback.format_exc()}", event)
+            app_logger.log_error(f"Failed to get portfolio snapshot: {e}", event)
             raise
+
     
     async def _fetch_single_snapshot_price(self, contract: 'Contract') -> Optional[Tuple[str, float]]:
         """

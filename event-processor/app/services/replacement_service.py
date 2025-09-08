@@ -9,6 +9,7 @@ import yaml
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from app.logger import AppLogger
+from app.models.rebalance_data import TargetAllocation
 
 app_logger = AppLogger(__name__)
 
@@ -60,12 +61,12 @@ class ReplacementService:
         except Exception as e:
             app_logger.log_error(f"Failed to load replacement sets: {e}")
     
-    def apply_replacements_with_scaling(self, allocations: List[Dict[str, Any]], replacement_set_name: Optional[str], event=None) -> List[Dict[str, Any]]:
+    def apply_replacements_with_scaling(self, allocations: List[TargetAllocation], replacement_set_name: Optional[str], event=None) -> List[TargetAllocation]:
         """
         Apply ETF replacements with scaling, adjusting non-replaced allocations to maintain 100% total
         
         Args:
-            allocations: List of allocation dicts with 'symbol' and 'allocation' keys
+            allocations: List of TargetAllocation dataclasses
             replacement_set_name: Name of replacement set to use, or None to skip replacements
             event: Event object for logging context
             
@@ -82,36 +83,39 @@ class ReplacementService:
             app_logger.log_debug(f"No replacement rules in set '{replacement_set_name}' - returning original allocations", event)
             return allocations
         
-        # Make a copy to avoid modifying the original
-        modified_allocations = [allocation.copy() for allocation in allocations]
-        
-        # Step 1: Apply replacements and track changes
+        # Step 1: Apply replacements and track changes  
+        modified_allocations = []
         replaced_symbols = set()
         total_excess = 0.0
         
         app_logger.log_debug(f"Applying replacement set '{replacement_set_name}' with {len(replacement_rules)} rules", event)
         
-        for allocation in modified_allocations:
-            symbol = allocation['symbol']
-            if symbol in replacement_rules:
-                rule = replacement_rules[symbol]
-                old_allocation = allocation['allocation']
+        for allocation in allocations:
+            if allocation.symbol in replacement_rules:
+                rule = replacement_rules[allocation.symbol]
+                old_allocation_percent = allocation.allocation_percent
+                new_allocation_percent = old_allocation_percent * rule.scale
                 
-                # Apply replacement
-                allocation['symbol'] = rule.target
-                allocation['allocation'] = old_allocation * rule.scale
+                # Create new TargetAllocation with replacement
+                modified_allocations.append(TargetAllocation(
+                    symbol=rule.target,
+                    allocation_percent=new_allocation_percent
+                ))
                 
                 # Track changes
-                excess = allocation['allocation'] - old_allocation
+                excess = new_allocation_percent - old_allocation_percent
                 total_excess += excess
                 replaced_symbols.add(rule.target)
                 
-                app_logger.log_debug(f"Replaced {symbol} -> {rule.target}: {old_allocation:.3f} -> {allocation['allocation']:.3f} (scale: {rule.scale})", event)
+                app_logger.log_debug(f"Replaced {allocation.symbol} -> {rule.target}: {old_allocation_percent:.3f} -> {new_allocation_percent:.3f} (scale: {rule.scale})", event)
+            else:
+                # Keep original allocation for now
+                modified_allocations.append(allocation)
         
         # Step 2: If we have excess allocation, scale down non-replaced holdings proportionally
         if total_excess > 0:
-            non_replaced_allocations = [a for a in modified_allocations if a['symbol'] not in replaced_symbols]
-            non_replaced_total = sum(a['allocation'] for a in non_replaced_allocations)
+            non_replaced_allocations = [a for a in modified_allocations if a.symbol not in replaced_symbols]
+            non_replaced_total = sum(a.allocation_percent for a in non_replaced_allocations)
             
             if non_replaced_total > 0:
                 # Calculate scale factor to absorb the excess
@@ -126,28 +130,40 @@ class ReplacementService:
                 
                 app_logger.log_debug(f"Scaling down {len(non_replaced_allocations)} non-replaced holdings by factor {scale_factor:.3f} to absorb excess {total_excess:.3f}", event)
                 
-                for allocation in non_replaced_allocations:
-                    old_allocation = allocation['allocation']
-                    allocation['allocation'] *= scale_factor
-                    app_logger.log_debug(f"Scaled down {allocation['symbol']}: {old_allocation:.3f} -> {allocation['allocation']:.3f}", event)
+                # Recreate the list with scaled allocations
+                final_allocations = []
+                for allocation in modified_allocations:
+                    if allocation.symbol not in replaced_symbols:
+                        # Scale down non-replaced
+                        old_allocation = allocation.allocation_percent
+                        new_allocation = allocation.allocation_percent * scale_factor
+                        final_allocations.append(TargetAllocation(
+                            symbol=allocation.symbol,
+                            allocation_percent=new_allocation
+                        ))
+                        app_logger.log_debug(f"Scaled down {allocation.symbol}: {old_allocation:.3f} -> {new_allocation:.3f}", event)
+                    else:
+                        # Keep replaced allocations as-is
+                        final_allocations.append(allocation)
+                
+                modified_allocations = final_allocations
         
         # Step 3: Consolidate duplicate symbols that resulted from replacements
         symbol_consolidation = {}
         for allocation in modified_allocations:
-            symbol = allocation['symbol']
-            if symbol in symbol_consolidation:
-                symbol_consolidation[symbol] += allocation['allocation']
+            if allocation.symbol in symbol_consolidation:
+                symbol_consolidation[allocation.symbol] += allocation.allocation_percent
             else:
-                symbol_consolidation[symbol] = allocation['allocation']
+                symbol_consolidation[allocation.symbol] = allocation.allocation_percent
         
-        # Convert back to list format
+        # Convert back to TargetAllocation list
         consolidated_allocations = [
-            {'symbol': symbol, 'allocation': total_allocation}
+            TargetAllocation(symbol=symbol, allocation_percent=total_allocation)
             for symbol, total_allocation in symbol_consolidation.items()
         ]
         
         # Verify final total
-        final_total = sum(a['allocation'] for a in consolidated_allocations)
+        final_total = sum(a.allocation_percent for a in consolidated_allocations)
         app_logger.log_debug(f"After consolidation: {len(consolidated_allocations)} unique symbols, total: {final_total:.3f} (should be ~1.0)", event)
         
         if abs(final_total - 1.0) > 0.01:
