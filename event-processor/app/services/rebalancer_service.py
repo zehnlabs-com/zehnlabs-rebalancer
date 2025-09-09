@@ -273,8 +273,8 @@ class RebalancerService:
             app_logger.log_error(f"Failed to validate trading hours: {e}", event)
             raise TradingHoursException(
                 message=f"Failed to validate trading hours",
-                next_start_time=next_start_time,
-                symbol_status=symbol_status
+                next_start_time=None,
+                symbol_status={}
             )
 
     
