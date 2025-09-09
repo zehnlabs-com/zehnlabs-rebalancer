@@ -271,8 +271,12 @@ class RebalancerService:
             raise
         except Exception as e:
             app_logger.log_error(f"Failed to validate trading hours: {e}", event)
-            # Don't block rebalancing if trading hours validation fails due to technical issues
-            app_logger.log_warning("Proceeding with rebalancing despite trading hours validation failure", event)
+            raise TradingHoursException(
+                message=f"Failed to validate trading hours",
+                next_start_time=next_start_time,
+                symbol_status=symbol_status
+            )
+
     
     
     

@@ -738,7 +738,7 @@ class IBKRClient:
                 app_logger.log_info(f"All symbols are within liquid hours", event)
             else:
                 next_str = earliest_next_start.strftime("%Y-%m-%d %H:%M:%S") if earliest_next_start else "unknown"
-                app_logger.log_info(f"Some symbols outside {hours_type}, earliest next start: {next_str}", event)
+                app_logger.log_info(f"Some symbols outside liquid hours, earliest next start: {next_str}", event)
             
             return TradingHoursResult(
                 all_within_hours=all_within_hours,
