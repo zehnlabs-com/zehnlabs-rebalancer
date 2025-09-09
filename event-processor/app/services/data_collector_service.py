@@ -250,9 +250,10 @@ class DataCollectorService:
             with open(accounts_file, 'r') as f:
                 config_data = yaml.safe_load(f)
                 
+            trading_mode = os.environ.get('TRADING_MODE', 'live')
             accounts = {}
             for account in config_data.get('accounts', []):
-                if account.get('type') == 'live' and account.get('enabled', False):
+                if account.get('type') == trading_mode and account.get('enabled', False):
                     account_id = account.get('account_id')
                     if account_id:
                         accounts[account_id] = {
@@ -261,7 +262,7 @@ class DataCollectorService:
                             'strategy': account.get('strategy_name')
                         }
             
-            app_logger.log_info(f"Loaded {len(accounts)} live accounts from accounts.yaml")
+            app_logger.log_info(f"Loaded {len(accounts)} {trading_mode} accounts from accounts.yaml")
             return accounts
             
         except Exception as e:
