@@ -50,7 +50,7 @@ class PrintRebalanceCommand(EventCommand):
                 app_logger.log_info(f"Rebalance orders for account {self.event.account_id} (would execute {len(result.orders)} orders):", self.event)
                 
                 for order in result.orders:
-                    app_logger.log_info(f"  Would {order.action} {order.quantity} shares of {order.symbol} (${order.market_value:.2f})", self.event)
+                    app_logger.log_info(f"  Would {order.action} {order.shares} shares of {order.symbol} (${order.estimated_value:.2f})", self.event)
             
             return EventCommandResult(
                 status=CommandStatus.SUCCESS,

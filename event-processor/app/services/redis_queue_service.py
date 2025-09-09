@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from app.services.base_redis_service import BaseRedisService
 from app.models.events import EventInfo
 from app.models.event_data import EventData
+from app.models.redis_data import AccountConfigData
 from app.config import config
 from app.logger import AppLogger
 
@@ -244,9 +245,9 @@ class RedisQueueService(BaseRedisService):
                             'exec': exec_command,
                             'created_at': datetime.now().isoformat(),
                             'times_queued': 1,
-                            'strategy_name': account_config.get('strategy_name', ''),
-                            'cash_reserve_percent': account_config.get('cash_reserve_percent', 0.0),
-                            'replacement_set': account_config.get('replacement_set'),
+                            'strategy_name': account_config.strategy if account_config else '',
+                            'cash_reserve_percent': 0.0,  # Default value
+                            'replacement_set': account_config.replacement_set if account_config else None,
                         }
                         
                         pipe.lpush("rebalance_queue", json.dumps(recovery_event_data))
@@ -269,45 +270,51 @@ class RedisQueueService(BaseRedisService):
             return 0
     
     def _event_info_to_dict(self, event_info: EventInfo) -> Dict[str, Any]:
-        """Convert EventInfo to dictionary format"""
-        return {
-            **event_info.payload,
-            'event_id': event_info.event_id,
-            'account_id': event_info.account_id,
-            'exec': event_info.exec_command,
-            'status': event_info.status,
-            'received_at': event_info.received_at.isoformat() if event_info.received_at else None,
-            'times_queued': event_info.times_queued,
-            'created_at': event_info.created_at.isoformat() if event_info.created_at else None
-        }
+        """Convert EventInfo to dictionary format using EventData"""
+        # Create EventData and convert to dict
+        event_data = EventData(
+            event_id=event_info.event_id,
+            account_id=event_info.account_id,
+            exec_command=event_info.exec_command,
+            times_queued=event_info.times_queued,
+            created_at=event_info.created_at or datetime.now(),
+            data=event_info.payload
+        )
+        result = event_data.model_dump()
+        # Add additional fields for compatibility
+        result['status'] = event_info.status
+        result['received_at'] = event_info.received_at.isoformat() if event_info.received_at else None
+        result['exec'] = event_info.exec_command  # Alias for backward compatibility
+        return result
     
-    def _load_account_config(self, account_id: str) -> Dict[str, Any]:
+    def _load_account_config(self, account_id: str) -> Optional[AccountConfigData]:
         """Load account configuration from accounts.yaml"""
         try:
             accounts_path = os.path.join("/app", "accounts.yaml")
             if not os.path.exists(accounts_path):
                 app_logger.log_warning(f"accounts.yaml not found at {accounts_path}")
-                return {}
+                return None
             
             with open(accounts_path, 'r') as f:
                 yaml_data = yaml.safe_load(f)
             
             if not yaml_data:
-                return {}
+                return None
             
             accounts_data = yaml_data.get('accounts', [])
             
             for account in accounts_data:
                 if account.get('account_id') == account_id:
-                    return {
-                        'strategy_name': account.get('strategy_name', ''),
-                        'cash_reserve_percent': account.get('cash_reserve_percent', 0.0),
-                        'replacement_set': account.get('replacement_set')
-                    }
+                    return AccountConfigData(
+                        account_id=account_id,
+                        name=account.get('name', account_id),
+                        strategy=account.get('strategy_name'),
+                        replacement_set=account.get('replacement_set')
+                    )
             
             app_logger.log_warning(f"Account {account_id} not found in accounts.yaml")
-            return {}
+            return None
             
         except Exception as e:
             app_logger.log_error(f"Failed to load account config for {account_id}: {e}")
-            return {}
+            return None

@@ -248,7 +248,10 @@ class RebalancerService:
             app_logger.log_debug(f"Validating trading hours for {len(all_symbols)} symbols: {all_symbols}", event)
             
             # Check trading hours for all symbols
-            all_within_hours, next_start_time, symbol_status = await self.ibkr_client.check_trading_hours(all_symbols, event)
+            trading_hours_result = await self.ibkr_client.check_trading_hours(all_symbols, event)
+            all_within_hours = trading_hours_result.all_within_hours
+            next_start_time = trading_hours_result.next_start_time
+            symbol_status = trading_hours_result.symbol_status
             
             if not all_within_hours:
                 # Some symbols are outside trading hours

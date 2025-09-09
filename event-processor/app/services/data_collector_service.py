@@ -10,9 +10,10 @@ import math
 import os
 import yaml
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from app.config import config
+from app.models.redis_data import AccountConfigData, DashboardUpdateMessage
 from app.logger import AppLogger
 from app.services.ibkr_client import IBKRClient
 from app.services.redis_account_service import RedisAccountService
@@ -133,12 +134,12 @@ class DataCollectorService:
             
             # Get P&L data
             pnl_data = await self.ibkr_client.get_account_pnl(account_id)
-            todays_pnl = pnl_data["daily_pnl"]
-            total_upnl = pnl_data["unrealized_pnl"]
+            todays_pnl = pnl_data.daily_pnl
+            total_upnl = pnl_data.unrealized_pnl
             
             # Get IRA status from accounts.yaml (based on replacement_set)
-            account_config = self._accounts.get(account_id, {})
-            is_ira = account_config.get("replacement_set") == "ira"
+            account_config = self._accounts.get(account_id)
+            is_ira = account_config.replacement_set == "ira" if account_config else False
             
             # Prepare position data from portfolio snapshot
             positions = []
@@ -167,8 +168,8 @@ class DataCollectorService:
             # Create strongly typed AccountData
             account_data = AccountData(
                 account_id=account_id,
-                account_name=account_config.get("name", account_id),
-                strategy_name=account_config.get("strategy"),
+                account_name=account_config.name if account_config else account_id,
+                strategy_name=account_config.strategy if account_config else None,
                 is_ira=is_ira,
                 net_liquidation=portfolio_snapshot.total_value,
                 cash_balance=portfolio_snapshot.cash_balance,
@@ -197,11 +198,12 @@ class DataCollectorService:
     async def _publish_account_update(self, account_id: str) -> None:
         """Publish account update notification via Redis pub/sub"""
         try:
-            message = {
-                "type": "account_data_updated",
-                "account_id": account_id,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
+            message = DashboardUpdateMessage(
+                account_id=account_id,
+                update_type="account",
+                data={"account_data_updated": True},
+                timestamp=datetime.now(timezone.utc).isoformat()
+            )
             await self.redis_account_service.publish_dashboard_update(message)
             app_logger.log_debug(f"Published account update notification for {account_id}")
         except Exception as e:
@@ -233,17 +235,19 @@ class DataCollectorService:
             await self.redis_account_service.update_dashboard_summary(summary)
             
             # Publish notification
-            message = {
-                "type": "dashboard_summary_updated",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
+            message = DashboardUpdateMessage(
+                account_id=None,  # Summary is not account-specific
+                update_type="summary",
+                data={"dashboard_summary_updated": True},
+                timestamp=datetime.now(timezone.utc).isoformat()
+            )
             await self.redis_account_service.publish_dashboard_update(message)
             app_logger.log_debug("Published dashboard summary update notification")
             
         except Exception as e:
             app_logger.log_error(f"Failed to publish dashboard summary: {e}")
     
-    def load_accounts_config(self) -> dict:
+    def load_accounts_config(self) -> Dict[str, AccountConfigData]:
         """Load accounts configuration from accounts.yaml"""
         try:
             accounts_file = "accounts.yaml"
@@ -256,11 +260,12 @@ class DataCollectorService:
                 if account.get('type') == trading_mode and account.get('enabled', False):
                     account_id = account.get('account_id')
                     if account_id:
-                        accounts[account_id] = {
-                            'name': account.get('name', account_id),
-                            'replacement_set': account.get('replacement_set'),
-                            'strategy': account.get('strategy_name')
-                        }
+                        accounts[account_id] = AccountConfigData(
+                            account_id=account_id,
+                            name=account.get('name', account_id),
+                            replacement_set=account.get('replacement_set'),
+                            strategy=account.get('strategy_name')
+                        )
             
             app_logger.log_info(f"Loaded {len(accounts)} {trading_mode} accounts from accounts.yaml")
             return accounts

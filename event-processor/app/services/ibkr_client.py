@@ -10,6 +10,7 @@ from ib_async.contract import ContractDetails
 from app.config import config
 from app.logger import AppLogger
 from app.models.rebalance_data import AccountSnapshot, CurrentPosition, PortfolioSnapshot, PortfolioPosition
+from app.models.ibkr_data import PnLData, ContractDetailsData, TradingHoursResult, MarketPrices
 
 app_logger = AppLogger(__name__)
 class IBKRClient:
@@ -138,7 +139,7 @@ class IBKRClient:
             app_logger.log_error(f"Failed to get cash balance: {e}")
             raise
     
-    async def get_account_pnl(self, account_id: str) -> dict:
+    async def get_account_pnl(self, account_id: str) -> PnLData:
         """Get P&L data for the account using IBKR's reqPnL method"""
         if not await self.ensure_connected():
             raise Exception("Unable to establish IBKR connection")
@@ -150,7 +151,6 @@ class IBKRClient:
             pnl_obj = self.ib.reqPnL(account_id)
             
             # Wait a moment for the PnL data to be populated
-            import asyncio
             await asyncio.sleep(2)  # Give it time to get data
             
             # Extract P&L values from the object
@@ -163,20 +163,20 @@ class IBKRClient:
             
             app_logger.log_debug(f"P&L for account {account_id}: daily={daily_pnl}, unrealized={unrealized_pnl}, realized={realized_pnl}")
             
-            return {
-                "daily_pnl": daily_pnl,
-                "unrealized_pnl": unrealized_pnl,
-                "realized_pnl": realized_pnl
-            }
+            return PnLData(
+                daily_pnl=daily_pnl,
+                unrealized_pnl=unrealized_pnl,
+                realized_pnl=realized_pnl
+            )
                 
         except Exception as e:
             app_logger.log_error(f"Failed to get P&L for account {account_id}: {e}")
             # Return zeros if P&L request fails
-            return {
-                "daily_pnl": 0.0,
-                "unrealized_pnl": 0.0,
-                "realized_pnl": 0.0
-            }
+            return PnLData(
+                daily_pnl=0.0,
+                unrealized_pnl=0.0,
+                realized_pnl=0.0
+            )
     
     async def get_account_snapshot(self, account_id: str, event=None) -> AccountSnapshot:
         """Get complete account snapshot with positions and account value"""
@@ -378,7 +378,7 @@ class IBKRClient:
             app_logger.log_warning(f"Historical data fetch failed for {contract.symbol}: {e}")
             return None
 
-    async def get_multiple_market_prices(self, symbols: List[str], event=None) -> Dict[str, float]:
+    async def get_multiple_market_prices(self, symbols: List[str], event=None) -> MarketPrices:
         """
         Gets market prices using a robust, two-phase concurrent strategy.
         Phase 1: Concurrent snapshot requests for all symbols during market hours.
@@ -388,7 +388,7 @@ class IBKRClient:
             raise Exception("Unable to establish IBKR connection")
         
         if not symbols:
-            return {}
+            return MarketPrices(prices={})
         
         # Qualify all contracts first to ensure proper contract specifications
         contracts = [Stock(s, 'SMART', 'USD') for s in symbols]
@@ -451,7 +451,7 @@ class IBKRClient:
         # Single consolidated completion log
         phase2_msg = f", Phase 2 (Historical): {successful_historical}/{len(remaining_symbols) if remaining_symbols else 0}" if remaining_symbols else ""
         app_logger.log_debug(f"Market prices retrieved for {len(symbols)} symbols - Phase 1 (Snapshot): {successful_snapshots}/{len(qualified_contracts)}{phase2_msg}")
-        return prices
+        return MarketPrices(prices=prices)
     
     
     async def place_order(self, account_id: str, symbol: str, quantity: int, order_type: str = "MKT", event=None, 
@@ -609,7 +609,7 @@ class IBKRClient:
                 app_logger.log_debug(f"Reconnecting to IBKR gateway...")
                 return await self.connect()
     
-    async def get_contract_details(self, symbols: List[str], event=None) -> Dict[str, Any]:
+    async def get_contract_details(self, symbols: List[str], event=None) -> Dict[str, ContractDetailsData]:
         """
         Get contract details for multiple symbols including trading hours information
         
@@ -635,12 +635,12 @@ class IBKRClient:
                         # Take the first matching contract details
                         details = details_list[0]
                         
-                        contract_details[contract.symbol] = {
-                            'tradingHours': details.tradingHours,
-                            'liquidHours': details.liquidHours,
-                            'timeZone': details.timeZoneId,
-                            'contractDetails': details
-                        }
+                        contract_details[contract.symbol] = ContractDetailsData(
+                            trading_hours=details.tradingHours,
+                            liquid_hours=details.liquidHours,
+                            time_zone=details.timeZoneId,
+                            contract_details=details
+                        )
                         
                         app_logger.log_debug(f"Got contract details for {contract.symbol}: timeZone={details.timeZoneId}", event)
                     else:
@@ -657,7 +657,7 @@ class IBKRClient:
             raise
     
     
-    async def check_trading_hours(self, symbols: List[str], event=None) -> Tuple[bool, Optional[datetime], Dict[str, bool]]:
+    async def check_trading_hours(self, symbols: List[str], event=None) -> TradingHoursResult:
         """
         Check if all symbols are currently within their trading hours.
         
@@ -669,7 +669,11 @@ class IBKRClient:
             Tuple of (all_within_hours, earliest_next_start, symbol_status_dict)
         """
         if not symbols:
-            return True, None, {}
+            return TradingHoursResult(
+                all_within_hours=True,
+                next_start_time=None,
+                symbol_status={}
+            )
         
         try:
             # Get contract details for all symbols
@@ -690,7 +694,7 @@ class IBKRClient:
                     continue
                 
                 # Get the ContractDetails object
-                contract_detail_obj = details.get('contractDetails')
+                contract_detail_obj = details.contract_details
                 if not contract_detail_obj:
                     app_logger.log_warning(f"No contract details object for {symbol}", event)
                     symbol_status[symbol] = False
@@ -732,7 +736,11 @@ class IBKRClient:
                 next_str = earliest_next_start.strftime("%Y-%m-%d %H:%M:%S") if earliest_next_start else "unknown"
                 app_logger.log_info(f"Some symbols outside {hours_type}, earliest next start: {next_str}", event)
             
-            return all_within_hours, earliest_next_start, symbol_status
+            return TradingHoursResult(
+                all_within_hours=all_within_hours,
+                next_start_time=earliest_next_start,
+                symbol_status=symbol_status
+            )
             
         except Exception as e:
             app_logger.log_error(f"Failed to check trading hours: {e}", event)

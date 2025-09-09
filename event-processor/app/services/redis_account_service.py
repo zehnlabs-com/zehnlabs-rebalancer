@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from app.services.base_redis_service import BaseRedisService
 from app.models.account_data import AccountData, DashboardSummary
+from app.models.redis_data import DashboardUpdateMessage
 from app.config import config
 from app.logger import AppLogger
 
@@ -84,14 +85,14 @@ class RedisAccountService(BaseRedisService):
             app_logger.log_error(f"Failed to update dashboard summary: {e}")
             raise
     
-    async def publish_dashboard_update(self, message: Dict[str, Any]) -> None:
+    async def publish_dashboard_update(self, message: DashboardUpdateMessage) -> None:
         """Publish dashboard update message"""
         try:
             async def publish_operation(client):
-                return await client.publish("dashboard_updates", json.dumps(message))
+                return await client.publish("dashboard_updates", message.model_dump_json())
             
             await self.execute_with_retry(publish_operation)
-            app_logger.log_debug(f"Published dashboard update: {message.get('type', 'unknown')}")
+            app_logger.log_debug(f"Published dashboard update: {message.update_type}")
         except Exception as e:
             app_logger.log_error(f"Failed to publish dashboard update: {e}")
             raise
