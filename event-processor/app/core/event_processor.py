@@ -157,6 +157,8 @@ class EventProcessor:
                 # Remove from active events set after successful processing
                 await queue_service.remove_from_queued(event_info.account_id, event_info.exec_command)
                 app_logger.log_debug("Event processed successfully, removed from active events", event_info)
+            elif result.status == CommandStatus.DELAYED:
+                app_logger.log_info(f"Command delayed: {result.message}", event_info)
             else:
                 app_logger.log_error(f"Command failed: {result.error}", event_info)
                 await self._handle_failed_event(event_info, result.error)

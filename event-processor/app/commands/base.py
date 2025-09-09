@@ -16,6 +16,7 @@ class CommandStatus(Enum):
     SUCCESS = "success"
     FAILED = "failed"
     PARTIAL = "partial"
+    DELAYED = "delayed"
 
 
 @dataclass

@@ -85,7 +85,7 @@ class RebalanceCommand(EventCommand):
                 await queue_service.add_to_delayed_queue(self.event, e.next_start_time)
                 
                 return EventCommandResult(
-                    status=CommandStatus.SUCCESS,
+                    status=CommandStatus.DELAYED,
                     message=f"Rebalance delayed until next trading window: {e.next_start_time.strftime('%Y-%m-%d %H:%M:%S')}",
                     data={"action": "delayed", "next_execution_time": e.next_start_time.isoformat(), "symbol_status": e.symbol_status}
                 )

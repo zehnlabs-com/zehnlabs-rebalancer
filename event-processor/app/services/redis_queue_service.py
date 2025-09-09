@@ -93,14 +93,13 @@ class RedisQueueService(BaseRedisService):
             event_data['status'] = 'delayed'
             event_data['delayed_until'] = execution_time.isoformat()
             
-            # Add to delayed queue and remove from active set
+            # Add to delayed queue (keep in active set to prevent duplicates)
             execution_timestamp = int(execution_time.timestamp())
             deduplication_key = f"{event_info.account_id}:{event_info.exec_command}"
             
             async def delay_operation(client):
                 pipe = client.pipeline()
-                pipe.zadd("delayed_execution_set", {json.dumps(event_data): execution_timestamp})
-                pipe.srem("active_events_set", deduplication_key)
+                pipe.zadd("delayed_execution_set", {json.dumps(event_data): execution_timestamp})                
                 return await pipe.execute()
             
             await self.execute_with_retry(delay_operation)
@@ -284,7 +283,20 @@ class RedisQueueService(BaseRedisService):
         result['status'] = event_info.status
         result['received_at'] = event_info.received_at.isoformat() if event_info.received_at else None
         result['exec'] = event_info.exec_command  # Alias for backward compatibility
+        
+        result = self._make_json_serializable(result)
         return result
+    
+    def _make_json_serializable(self, obj):
+        """Recursively convert datetime objects to ISO format strings for JSON serialization"""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, dict):
+            return {key: self._make_json_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_json_serializable(item) for item in obj]
+        else:
+            return obj
     
     def _load_account_config(self, account_id: str) -> Optional[AccountConfigData]:
         """Load account configuration from accounts.yaml"""

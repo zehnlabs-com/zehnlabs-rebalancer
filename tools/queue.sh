@@ -77,13 +77,15 @@ enqueue_event() {
 show_status() {
     echo ""
     echo "=== Queue Status ==="
-    local queue_length=$(redis_exec LLEN rebalance_queue)
-    local active_count=$(redis_exec SCARD active_events_set)
+    local rebalance_queue_count=$(redis_exec LLEN rebalance_queue)
+    local active_events_count=$(redis_exec SCARD active_events_set)
+    local delayed_queue_count=$(redis_exec ZCARD delayed_execution_set)
     
-    echo "Queue length: $queue_length"
-    echo "Active events: $active_count"
+    echo "rebalance_queue: $rebalance_queue_count"
+    echo "active_events_set: $active_events_count"
+    echo "delayed_execution_set: $delayed_queue_count"
     
-    if [[ "$active_count" -gt 0 ]]; then
+    if [[ "$active_events_count" -gt 0 ]]; then
         echo ""
         echo "Active event keys:"
         redis_exec SMEMBERS active_events_set | while read -r key; do

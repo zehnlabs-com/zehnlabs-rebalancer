@@ -130,7 +130,7 @@ class UserNotificationService:
             elif event_type == 'event_success_first':
                 await self.notify_event_completed(event_info)
             elif event_type == 'event_delayed':
-                delayed_until = event_info.payload.get('delayed_until', 'unknown')
+                delayed_until = extra_details.get('delayed_until', 'unknown') if extra_details else 'unknown'
                 await self.notify_event_execution_delayed(event_info, delayed_until)
             elif event_type == 'event_connection_error':
                 error_message = extra_details.get('error_message') if extra_details else None
