@@ -14,12 +14,16 @@ from app.models.ibkr_data import PnLData, ContractDetailsData, TradingHoursResul
 
 app_logger = AppLogger(__name__)
 class IBKRClient:
-    def __init__(self, service_container=None):
+    def __init__(self, service_container=None, client_id_range=None):
         self.ib = IB()
         self.ib.RequestTimeout = 10.0  # Match rebalancer-api timeout
         
-        # Use fixed client ID from environment (like the working old code)
-        self.client_id = random.randint(1000, 2999)
+        # Use client ID range to avoid conflicts between services
+        if client_id_range:
+            self.client_id = random.randint(client_id_range[0], client_id_range[1])
+        else:
+            # Default range for backward compatibility
+            self.client_id = random.randint(1000, 2999)
         
         # Add synchronization locks
         self._connection_lock = asyncio.Lock()
@@ -36,14 +40,14 @@ class IBKRClient:
         
         try:
             # Direct connection like the old working code
-            app_logger.log_debug(f"Attempting to connect to IB Gateway at {config.ibkr.host}:{config.ibkr.port} with client ID {self.client_id}")
+            app_logger.log_info(f"Attempting to connect to IB Gateway at {config.ibkr.host}:{config.ibkr.port} with client ID {self.client_id}")
             await self.ib.connectAsync(
                 host=config.ibkr.host,
                 port=config.ibkr.port,
                 clientId=self.client_id,
                 timeout=10  # Use same timeout as old working code
             )
-            app_logger.log_debug(f"Successfully connected to IB Gateway at {config.ibkr.host}:{config.ibkr.port}")
+            app_logger.log_info(f"Successfully connected to IB Gateway at {config.ibkr.host}:{config.ibkr.port} with client ID {self.client_id}")
             
             # Set market data type for proper price data (1=real-time, 3=delayed, 4=frozen)
             self.ib.reqMarketDataType(3)  # Use delayed data (should work without special permissions)

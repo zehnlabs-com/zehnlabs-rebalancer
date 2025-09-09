@@ -46,12 +46,20 @@ class ServiceContainer(containers.DeclarativeContainer):
         QueueService,
         redis_queue_service=redis_queue_service,
         user_notification_service=user_notification_service
+    )    
+    
+    # Rebalancing client
+    ibkr_rebalance_client = providers.Singleton(
+        IBKRClient,
+        service_container=providers.Self(),
+        client_id_range=(1000, 1999)
     )
     
-    # IBKR client
-    ibkr_client = providers.Singleton(
+    # Data collection client
+    ibkr_data_client = providers.Singleton(
         IBKRClient,
-        service_container=providers.Self()
+        service_container=providers.Self(),
+        client_id_range=(2000, 2999)
     )
     
     # Command factory
@@ -63,9 +71,9 @@ class ServiceContainer(containers.DeclarativeContainer):
     # Rebalancer service (lazy initialization for optional import)
     rebalancer_service = providers.Singleton(
         providers.Callable(
-            lambda ibkr_client: _get_rebalancer_service(ibkr_client)
+            lambda ibkr_rebalance_client: _get_rebalancer_service(ibkr_rebalance_client)
         ),
-        ibkr_client=ibkr_client
+        ibkr_rebalance_client=ibkr_rebalance_client
     )
 
 

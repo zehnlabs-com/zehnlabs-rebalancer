@@ -41,9 +41,9 @@ class ApplicationService:
             
             # Start real-time portfolio event service for dashboard
             from app.services.data_collector_service import DataCollectorService
-            ibkr_client = self.service_container.ibkr_client()
+            ibkr_data_client = self.service_container.ibkr_data_client()
             redis_account_service = self.service_container.redis_account_service()
-            self.data_collector_service = DataCollectorService(ibkr_client, redis_account_service)
+            self.data_collector_service = DataCollectorService(ibkr_data_client, redis_account_service)
             await self.data_collector_service.start_collection_tasks()  # Now starts real-time event subscriptions
             
             self.running = True

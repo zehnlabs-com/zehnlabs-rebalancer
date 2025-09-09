@@ -141,7 +141,7 @@ class EventProcessor:
                 'queue_service': self.service_container.queue_service(),
                 'redis_account_service': self.service_container.redis_account_service(),
                 'redis_notification_service': self.service_container.redis_notification_service(),
-                'ibkr_client': self.service_container.ibkr_client(),
+                'ibkr_client': self.service_container.ibkr_rebalance_client(),
                 'rebalancer_service': self.service_container.rebalancer_service()
             }
             result = await command.execute(services)
