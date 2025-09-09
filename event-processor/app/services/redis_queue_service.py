@@ -4,7 +4,6 @@ Handles all queue-related Redis operations
 """
 import json
 import time
-import uuid
 import yaml
 import os
 import redis.asyncio as redis

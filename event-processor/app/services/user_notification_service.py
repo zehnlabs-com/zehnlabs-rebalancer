@@ -2,13 +2,9 @@
 """
 User Notification Service with Redis-based notification queue
 """
-import json
-import uuid
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
-import aiohttp
-from dataclasses import dataclass
 from app.config import config
 from app.logger import AppLogger
 from app.models.events import EventInfo
