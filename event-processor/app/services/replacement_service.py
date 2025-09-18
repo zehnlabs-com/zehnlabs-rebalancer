@@ -61,26 +61,25 @@ class ReplacementService:
         except Exception as e:
             app_logger.log_error(f"Failed to load replacement sets: {e}")
     
-    def apply_replacements_with_scaling(self, allocations: List[TargetAllocation], replacement_set_name: Optional[str], event=None) -> List[TargetAllocation]:
+    def apply_replacements_with_scaling(self, allocations: List[TargetAllocation], replacement_set_name: Optional[str]) -> List[TargetAllocation]:
         """
         Apply ETF replacements with scaling, adjusting non-replaced allocations to maintain 100% total
-        
+
         Args:
             allocations: List of TargetAllocation dataclasses
             replacement_set_name: Name of replacement set to use, or None to skip replacements
-            event: Event object for logging context
-            
+
         Returns:
             Modified allocations list with replacements applied and normalized to 100%
         """
         if not replacement_set_name or replacement_set_name not in self.replacement_sets:
-            app_logger.log_debug(f"No replacement set '{replacement_set_name}' found - returning original allocations", event)
+            app_logger.log_debug(f"No replacement set '{replacement_set_name}' found - returning original allocations")
             return allocations
         
         replacement_rules = {rule.source: rule for rule in self.replacement_sets[replacement_set_name]}
         
         if not replacement_rules:
-            app_logger.log_debug(f"No replacement rules in set '{replacement_set_name}' - returning original allocations", event)
+            app_logger.log_debug(f"No replacement rules in set '{replacement_set_name}' - returning original allocations")
             return allocations
         
         # Step 1: Apply replacements and track changes  
@@ -88,7 +87,7 @@ class ReplacementService:
         replaced_symbols = set()
         total_excess = 0.0
         
-        app_logger.log_debug(f"Applying replacement set '{replacement_set_name}' with {len(replacement_rules)} rules", event)
+        app_logger.log_debug(f"Applying replacement set '{replacement_set_name}' with {len(replacement_rules)} rules")
         
         for allocation in allocations:
             if allocation.symbol in replacement_rules:
@@ -107,7 +106,7 @@ class ReplacementService:
                 total_excess += excess
                 replaced_symbols.add(rule.target)
                 
-                app_logger.log_debug(f"Replaced {allocation.symbol} -> {rule.target}: {old_allocation_percent:.3f} -> {new_allocation_percent:.3f} (scale: {rule.scale})", event)
+                app_logger.log_debug(f"Replaced {allocation.symbol} -> {rule.target}: {old_allocation_percent:.3f} -> {new_allocation_percent:.3f} (scale: {rule.scale})")
             else:
                 # Keep original allocation for now
                 modified_allocations.append(allocation)
@@ -122,13 +121,13 @@ class ReplacementService:
                 target_non_replaced_total = non_replaced_total - total_excess
                 
                 if target_non_replaced_total < 0:
-                    app_logger.log_warning(f"Replacement scaling exceeds available non-replaced allocation. Excess: {total_excess:.3f}, Available: {non_replaced_total:.3f}", event)
+                    app_logger.log_warning(f"Replacement scaling exceeds available non-replaced allocation. Excess: {total_excess:.3f}, Available: {non_replaced_total:.3f}")
                     # Continue anyway - will result in over-allocation but preserve replacement intent
                     target_non_replaced_total = 0.1 * non_replaced_total  # Leave minimal allocation
                 
                 scale_factor = target_non_replaced_total / non_replaced_total
                 
-                app_logger.log_debug(f"Scaling down {len(non_replaced_allocations)} non-replaced holdings by factor {scale_factor:.3f} to absorb excess {total_excess:.3f}", event)
+                app_logger.log_debug(f"Scaling down {len(non_replaced_allocations)} non-replaced holdings by factor {scale_factor:.3f} to absorb excess {total_excess:.3f}")
                 
                 # Recreate the list with scaled allocations
                 final_allocations = []
@@ -141,7 +140,7 @@ class ReplacementService:
                             symbol=allocation.symbol,
                             allocation_percent=new_allocation
                         ))
-                        app_logger.log_debug(f"Scaled down {allocation.symbol}: {old_allocation:.3f} -> {new_allocation:.3f}", event)
+                        app_logger.log_debug(f"Scaled down {allocation.symbol}: {old_allocation:.3f} -> {new_allocation:.3f}")
                     else:
                         # Keep replaced allocations as-is
                         final_allocations.append(allocation)
@@ -164,9 +163,9 @@ class ReplacementService:
         
         # Verify final total
         final_total = sum(a.allocation_percent for a in consolidated_allocations)
-        app_logger.log_debug(f"After consolidation: {len(consolidated_allocations)} unique symbols, total: {final_total:.3f} (should be ~1.0)", event)
+        app_logger.log_debug(f"After consolidation: {len(consolidated_allocations)} unique symbols, total: {final_total:.3f} (should be ~1.0)")
         
         if abs(final_total - 1.0) > 0.01:
-            app_logger.log_warning(f"Final allocation total is {final_total:.3f}, not 1.0 - may indicate replacement scaling issues", event)
+            app_logger.log_warning(f"Final allocation total is {final_total:.3f}, not 1.0 - may indicate replacement scaling issues")
         
         return consolidated_allocations

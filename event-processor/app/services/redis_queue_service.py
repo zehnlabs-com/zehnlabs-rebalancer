@@ -71,7 +71,7 @@ class RedisQueueService(BaseRedisService):
                     created_at=event_data.created_at
                 )
                 
-                app_logger.log_debug(f"Retrieved event from queue", event_info)
+                app_logger.log_debug(f"Retrieved event from queue")
                 return event_info
             
             return None
@@ -104,7 +104,7 @@ class RedisQueueService(BaseRedisService):
             
             await self.execute_with_retry(delay_operation)
             
-            app_logger.log_info(f"Event delayed until {execution_time.strftime('%Y-%m-%d %H:%M:%S')}", event_info)
+            app_logger.log_info(f"Event delayed until {execution_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
         except Exception as e:
             app_logger.log_error(f"Failed to delay event: {e}")

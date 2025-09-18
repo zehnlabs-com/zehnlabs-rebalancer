@@ -13,7 +13,7 @@ app_logger = AppLogger(__name__)
 class AllocationService:
     def __init__(self):
         self.replacement_service = ReplacementService()
-    async def get_allocations(self, account_config: EventAccountConfig, event=None) -> List[TargetAllocation]:        
+    async def get_allocations(self, account_config: EventAccountConfig) -> List[TargetAllocation]:        
         allocations_url = f"{config.allocations_base_url}/{account_config.strategy_name}/allocations"
         
         api_key = config.allocations_api_key
@@ -22,7 +22,7 @@ class AllocationService:
         if api_key:            
             headers['x-api-key'] = api_key
 
-        app_logger.log_debug(f"Retrieving allocations from {allocations_url} with API key {api_key}", event)
+        app_logger.log_debug(f"Retrieving allocations from {allocations_url} with API key {api_key}")
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -71,16 +71,16 @@ class AllocationService:
                         total_allocation += allocation
                     
                     if abs(total_allocation - 1.0) > 0.01:
-                        app_logger.log_warning(f"Total allocation is {total_allocation:.3f}, not 1.0", event)
+                        app_logger.log_warning(f"Total allocation is {total_allocation:.3f}, not 1.0")
                     
                     strategy_name = response_data.get("name", "Unknown")
                     strategy_long_name = response_data.get("strategy_long_name", "")
                     last_rebalance = response_data.get("last_rebalance_on", "")
                     
-                    app_logger.log_info(f"Retrieved {len(allocations)} allocations for account {account_config.account_id}", event)
-                    app_logger.log_info(f"Strategy: {strategy_name} ({strategy_long_name})", event)
+                    app_logger.log_info(f"Retrieved {len(allocations)} allocations for account {account_config.account_id}")
+                    app_logger.log_info(f"Strategy: {strategy_name} ({strategy_long_name})")
                     if last_rebalance:
-                        app_logger.log_info(f"Last rebalance: {last_rebalance}", event)
+                        app_logger.log_info(f"Last rebalance: {last_rebalance}")
                     
                     # Note: ETF replacements are applied later during buy order recalculation
                     # to ensure sell orders use original symbols (what we own) and buy orders
@@ -89,11 +89,11 @@ class AllocationService:
                     return allocations
                     
         except json.JSONDecodeError as e:
-            app_logger.log_error(f"Invalid JSON response from allocation API: {e}", event)
+            app_logger.log_error(f"Invalid JSON response from allocation API: {e}")
             raise
         except aiohttp.ClientError as e:
-            app_logger.log_error(f"HTTP error getting allocations: {e}", event)
+            app_logger.log_error(f"HTTP error getting allocations: {e}")
             raise
         except Exception as e:
-            app_logger.log_error(f"Error getting allocations: {e}", event)
+            app_logger.log_error(f"Error getting allocations: {e}")
             raise

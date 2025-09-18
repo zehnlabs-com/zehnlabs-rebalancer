@@ -96,7 +96,7 @@ class EventProcessor:
                     event_info = await queue_service.get_next_event()
                     
                     if event_info:
-                        app_logger.log_debug(f"Starting concurrent processing for event: {event_info.event_id}", event_info)
+                        app_logger.log_debug(f"Starting concurrent processing for event: {event_info.event_id}")
                         # Create task for concurrent processing with account ID as name
                         task = asyncio.create_task(
                             self._process_event_with_semaphore(event_info), 
@@ -118,7 +118,7 @@ class EventProcessor:
     
     async def process_event(self, event_info: EventInfo):
         """Process a single event using command pattern"""
-        app_logger.log_debug("Processing event", event_info)
+        app_logger.log_debug("Processing event")
         
         queue_service = self.service_container.queue_service()
         
@@ -148,7 +148,7 @@ class EventProcessor:
             
             # Handle command result
             if result.status == CommandStatus.SUCCESS:
-                app_logger.log_info(f"Command executed successfully: {result.message}", event_info)
+                app_logger.log_info(f"Command executed successfully: {result.message}")
                 
                 # Send success notification (different types for first vs retry)
                 success_event_type = 'event_success_first' if event_info.times_queued <= 1 else 'event_success_retry'
@@ -156,15 +156,15 @@ class EventProcessor:
                 
                 # Remove from active events set after successful processing
                 await queue_service.remove_from_queued(event_info.account_id, event_info.exec_command)
-                app_logger.log_debug("Event processed successfully, removed from active events", event_info)
+                app_logger.log_debug("Event processed successfully, removed from active events")
             elif result.status == CommandStatus.DELAYED:
-                app_logger.log_info(f"Command delayed: {result.message}", event_info)
+                app_logger.log_info(f"Command delayed: {result.message}")
             else:
-                app_logger.log_error(f"Command failed: {result.error}", event_info)
+                app_logger.log_error(f"Command failed: {result.error}")
                 await self._handle_failed_event(event_info, result.error)
                 
         except Exception as e:
-            app_logger.log_error(f"Error processing event {event_info.event_id}: {e}", event_info)
+            app_logger.log_error(f"Error processing event {event_info.event_id}: {e}")
             await self._handle_failed_event(event_info, str(e))
     
 
@@ -188,10 +188,10 @@ class EventProcessor:
             # Update event status
             event_info.status = 'failed'
             
-            app_logger.log_error(f"Rebalance failed - manual intervention required: {error_message}", event_info)
+            app_logger.log_error(f"Rebalance failed - manual intervention required: {error_message}")
             
         except Exception as e:
-            app_logger.log_error(f"Failed to handle failed event {event_info.event_id}: {e}", event_info)
+            app_logger.log_error(f"Failed to handle failed event {event_info.event_id}: {e}")
     
     
     
@@ -223,8 +223,8 @@ class EventProcessor:
         task_name = current_task.get_name() if current_task else "unknown"
         
         async with self.semaphore:
-            app_logger.log_debug(f"Acquired semaphore for account {task_name}, event: {event_info.event_id}", event_info)
+            app_logger.log_debug(f"Acquired semaphore for account {task_name}, event: {event_info.event_id}")
             try:
                 await self.process_event(event_info)
             finally:
-                app_logger.log_debug(f"Released semaphore for account {task_name}, event: {event_info.event_id}", event_info)
+                app_logger.log_debug(f"Released semaphore for account {task_name}, event: {event_info.event_id}")

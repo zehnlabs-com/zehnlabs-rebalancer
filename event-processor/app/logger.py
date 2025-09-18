@@ -7,6 +7,7 @@ import shutil
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from app.config import config
+from app.context import get_current_event
 
 class CompressingTimedRotatingFileHandler(TimedRotatingFileHandler):
     """TimedRotatingFileHandler that compresses rotated files"""
@@ -149,9 +150,13 @@ def _configure_third_party_loggers():
 
 def _extract_event_properties(event):
     """Extract relevant properties from an event object for logging"""
+    # First try to get event from context if not provided
+    if event is None:
+        event = get_current_event()
+
     if event is None:
         return {}
-    
+
     # Since EventInfo objects are strongly typed, we can directly access core properties
     properties = {
         'event_id': event.event_id,
@@ -161,31 +166,31 @@ def _extract_event_properties(event):
         'times_queued': event.times_queued,
         'received_at': event.received_at.strftime('%Y-%m-%d %H:%M:%S %Z') if isinstance(event.received_at, datetime) else event.received_at
     }
-    
+
     return properties
 
 class AppLogger:
     """Logger instance for event-based logging with automatic event context extraction"""
-    
+
     def __init__(self, name: str):
         self.logger = setup_logger(name)
     
-    def log_debug(self, message: str, event=None):
-        """Log debug message with event context"""
-        extra = _extract_event_properties(event)
+    def log_debug(self, message: str):
+        """Log debug message with automatic event context from ContextVar"""
+        extra = _extract_event_properties(None)
         self.logger.debug(message, extra=extra)
     
-    def log_info(self, message: str, event=None):
-        """Log info message with event context"""
-        extra = _extract_event_properties(event)
+    def log_info(self, message: str):
+        """Log info message with automatic event context from ContextVar"""
+        extra = _extract_event_properties(None)
         self.logger.info(message, extra=extra)
     
-    def log_warning(self, message: str, event=None):
-        """Log warning message with event context"""
-        extra = _extract_event_properties(event)
+    def log_warning(self, message: str):
+        """Log warning message with automatic event context from ContextVar"""
+        extra = _extract_event_properties(None)
         self.logger.warning(message, extra=extra)
     
-    def log_error(self, message: str, event=None):
-        """Log error message with event context"""
-        extra = _extract_event_properties(event)
+    def log_error(self, message: str):
+        """Log error message with automatic event context from ContextVar"""
+        extra = _extract_event_properties(None)
         self.logger.error(message, extra=extra)

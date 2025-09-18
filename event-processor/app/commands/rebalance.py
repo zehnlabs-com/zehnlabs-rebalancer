@@ -9,6 +9,7 @@ from app.models.account_config import EventAccountConfig
 from app.services.rebalancer_service import TradingHoursException
 from app.config import config
 from app.services.redis_account_service import RedisAccountService
+from app.context import set_current_event, clear_current_event
 
 app_logger = AppLogger(__name__)
 
@@ -21,7 +22,10 @@ class RebalanceCommand(EventCommand):
     
     async def execute(self, services: Dict[str, Any]) -> EventCommandResult:
         """Execute rebalance command with trading hours validation"""
-        
+
+        # Set the event context for all downstream method calls
+        set_current_event(self.event)
+
         try:
             rebalancer_service = services.get('rebalancer_service')
             queue_service = services.get('queue_service')
@@ -51,24 +55,24 @@ class RebalanceCommand(EventCommand):
             }
             account_config = EventAccountConfig.from_dict(config_data)
             
-            app_logger.log_info("Using MKT order type (only type supported)", self.event)
+            app_logger.log_info("Using MKT order type (only type supported)")
             
             # Execute rebalancing (always uses MKT orders)
-            result = await rebalancer_service.rebalance_account(account_config, self.event)
+            result = await rebalancer_service.rebalance_account(account_config)
             
-            app_logger.log_info(f"Rebalance completed - orders: {len(result.orders)}", self.event)
+            app_logger.log_info(f"Rebalance completed - orders: {len(result.orders)}")
             
             # Update last_rebalanced_on timestamp via Redis data service
             try:
                 redis_account_service = services.get('redis_account_service')
                 if redis_account_service:
                     await redis_account_service.update_last_rebalanced(self.event.account_id)
-                    app_logger.log_info(f"Updated last_rebalanced_on for account {self.event.account_id}", self.event)
+                    app_logger.log_info(f"Updated last_rebalanced_on for account {self.event.account_id}")
                 else:
-                    app_logger.log_warning("Redis account service not available for timestamp update", self.event)
+                    app_logger.log_warning("Redis account service not available for timestamp update")
             except Exception as e:
                 # Log error but don't fail the command
-                app_logger.log_error(f"Failed to update last_rebalanced_on: {e}", self.event)
+                app_logger.log_error(f"Failed to update last_rebalanced_on: {e}")
             
             return EventCommandResult(
                 status=CommandStatus.SUCCESS,
@@ -78,12 +82,12 @@ class RebalanceCommand(EventCommand):
             
         except TradingHoursException as e:
             # Handle trading hours validation failure
-            app_logger.log_info(f"Rebalance delayed due to trading hours: {e.message}", self.event)
-            
+            app_logger.log_info(f"Rebalance delayed due to trading hours: {e.message}")
+
             if e.next_start_time:
                 # Add event to delayed execution queue
                 await queue_service.add_to_delayed_queue(self.event, e.next_start_time)
-                
+
                 return EventCommandResult(
                     status=CommandStatus.DELAYED,
                     message=f"Rebalance delayed until next trading window: {e.next_start_time.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -97,9 +101,12 @@ class RebalanceCommand(EventCommand):
                 )
             
         except Exception as e:
-            app_logger.log_error(f"Rebalance failed: {e}", self.event)
-            
+            app_logger.log_error(f"Rebalance failed: {e}")
+
             return EventCommandResult(
                 status=CommandStatus.FAILED,
                 error=str(e)
             )
+        finally:
+            # Clear the context when done
+            clear_current_event()
