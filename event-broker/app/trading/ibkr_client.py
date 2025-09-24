@@ -111,16 +111,24 @@ class IBKRClient:
             # Get account values - use NetLiquidation as the definitive account value
             account_values = self.ib.accountValues(account=account_id)
             total_value = 0.0
+            cash_balance = 0.0
+            settled_cash = 0.0
 
             for value in account_values:
-                if value.tag == 'NetLiquidation' and value.currency == 'USD':
-                    total_value = float(value.value)
-                    break
+                if value.currency == 'USD':
+                    if value.tag == 'NetLiquidation':
+                        total_value = float(value.value)
+                    elif value.tag == 'CashBalance':
+                        cash_balance = float(value.value)
+                    elif value.tag == 'SettledCash':
+                        settled_cash = float(value.value)
 
             return {
                 'account_id': account_id,
                 'positions': positions,
                 'total_value': total_value,
+                'cash_balance': cash_balance,
+                'settled_cash': settled_cash,
                 'timestamp': asyncio.get_event_loop().time()
             }
 

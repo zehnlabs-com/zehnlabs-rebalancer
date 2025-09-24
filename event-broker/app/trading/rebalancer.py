@@ -66,12 +66,14 @@ class Rebalancer:
         if sell_orders:
             self.logger.info(f"Executing {len(sell_orders)} sell orders")
             for trade in sell_orders:
-                await self.ibkr.place_order(
+                order_result = await self.ibkr.place_order(
                     account_id=account_id,
                     symbol=trade['symbol'],
                     quantity=trade['quantity'],
                     order_type=trade.get('order_type', 'MARKET')
                 )
+                # Store the order ID in the trade object for tracking
+                trade['order_id'] = order_result['order_id']
 
             # Wait for sells to complete
             await self._wait_for_orders_complete(sell_orders)
@@ -93,12 +95,14 @@ class Rebalancer:
         if buy_orders:
             self.logger.info(f"Executing {len(buy_orders)} buy orders")
             for trade in buy_orders:
-                await self.ibkr.place_order(
+                order_result = await self.ibkr.place_order(
                     account_id=account_id,
                     symbol=trade['symbol'],
                     quantity=trade['quantity'],
                     order_type=trade.get('order_type', 'MARKET')
                 )
+                # Store the order ID in the trade object for tracking
+                trade['order_id'] = order_result['order_id']
 
             # Wait for buys to complete
             await self._wait_for_orders_complete(buy_orders)
@@ -191,9 +195,8 @@ class Rebalancer:
             all_complete = True
             for order in orders:
                 status = await self.ibkr.get_order_status(order.get('order_id'))
-                # TEMP LOGGING: Log actual status values to debug timeout issue
-                self.logger.info(f"Order {order.get('order_id')} status: '{status}' (type: {type(status)})")
-                if status not in ['Filled', 'Cancelled']:
+                self.logger.debug(f"Order {order.get('order_id')} status: '{status}'")
+                if status and status.upper() not in ['FILLED', 'CANCELLED']:
                     all_complete = False
                     break
 
@@ -229,10 +232,11 @@ class Rebalancer:
         else:
             self.logger.info("No positions held")
 
-        # Calculate cash (total_value - sum of position values)
-        positions_value = sum(pos.get('market_value', 0) for pos in positions)
-        cash_value = total_value - positions_value
-        self.logger.info(f"Cash: ${cash_value:,.2f}")
+        # Log actual cash balances from IBKR API
+        cash_balance = snapshot.get('cash_balance', 0)
+        settled_cash = snapshot.get('settled_cash', 0)
+        self.logger.info(f"Cash Balance: ${cash_balance:,.2f}")
+        self.logger.info(f"Settled Cash: ${settled_cash:,.2f}")
         self.logger.info("=" * 40)
 
     def _log_target_allocations(self, allocations: list):
