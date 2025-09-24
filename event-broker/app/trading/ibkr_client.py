@@ -137,19 +137,73 @@ class IBKRClient:
             raise
 
     async def get_multiple_market_prices(self, symbols: List[str]) -> Dict[str, float]:
-        """Get market prices for multiple symbols with fallback exchanges"""
+        """Get market prices for multiple symbols using batch request"""
         prices = {}
 
         try:
-            for symbol in symbols:
-                price = await self._get_single_market_price(symbol)
-                prices[symbol] = price
+            # Create contracts for all symbols
+            contracts = [Stock(symbol, 'SMART', 'USD') for symbol in symbols]
+
+            # Qualify contracts
+            qualified_contracts = []
+            symbol_to_contract = {}
+
+            for contract in contracts:
+                try:
+                    qualified = await self.ib.qualifyContractsAsync(contract)
+                    if qualified:
+                        qualified_contract = qualified[0]
+                        qualified_contracts.append(qualified_contract)
+                        symbol_to_contract[qualified_contract.symbol] = qualified_contract
+                except Exception as e:
+                    self.logger.debug(f"Failed to qualify contract for {contract.symbol}: {e}")
+
+            if not qualified_contracts:
+                self.logger.error("No contracts could be qualified")
+                return {symbol: 0.0 for symbol in symbols}
+
+            self.logger.info(f"Requesting batch prices for {len(qualified_contracts)} symbols...")
+
+            # Batch request all tickers at once
+            tickers = await self.ib.reqTickersAsync(*qualified_contracts)
+
+            # Extract prices from tickers
+            price_results = []
+            failed_symbols = []
+
+            for ticker in tickers:
+                symbol = ticker.contract.symbol
+                price = None
+
+                # Try to get the best available price
+                if ticker.last and ticker.last > 0:
+                    price = ticker.last
+                elif ticker.close and ticker.close > 0:
+                    price = ticker.close
+                elif ticker.bid and ticker.ask and ticker.bid > 0 and ticker.ask > 0:
+                    price = (ticker.bid + ticker.ask) / 2  # Mid-point
+
+                if price and price > 0:
+                    prices[symbol] = price
+                    price_results.append(f"{symbol} -> ${price}")
+                else:
+                    failed_symbols.append(symbol)
+                    self.logger.error(f"No valid price received for {symbol} from batch request")
+
+            # Log all successful prices in one concise line
+            if price_results:
+                self.logger.info(f"Retrieved prices: {', '.join(price_results)}")
+
+            # If any symbols failed, this is a critical system issue - fail immediately
+            if failed_symbols:
+                self.logger.error(f"Batch pricing failed for {len(failed_symbols)} symbols: {failed_symbols}")
+                raise ValueError(f"Batch pricing API failed for symbols: {failed_symbols}. This indicates a system issue that must be resolved.")
 
             return prices
 
         except Exception as e:
-            self.logger.error(f"Failed to get market prices: {e}")
-            return {symbol: 0.0 for symbol in symbols}
+            self.logger.error(f"Batch price request failed: {e}")
+            raise ValueError(f"Batch pricing system failure. This indicates a serious system issue that must be resolved.")
 
     async def _get_single_market_price(self, symbol: str) -> float:
         """Get market price for a single symbol with exchange fallback"""
@@ -186,9 +240,9 @@ class IBKRClient:
                 self.logger.debug(f"Failed to get price for {symbol} on {exchange}: {e}")
                 continue
 
-        # If all exchanges fail, log error and return 0
+        # If all exchanges fail, this is a critical error - we cannot proceed
         self.logger.error(f"Failed to get price for {symbol} on any exchange")
-        return 0.0
+        raise ValueError(f"Cannot obtain valid price for {symbol} from any exchange. Trading operations cannot proceed safely.")
 
     async def place_order(self, account_id: str, symbol: str, quantity: int, order_type: str = 'MARKET') -> Dict[str, Any]:
         """Place an order"""
