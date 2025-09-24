@@ -1,41 +1,20 @@
-x-system-version: &system-version "1.0.2"
+x-system-version: &system-version "2.0.0"
 
 volumes:
   ib_data:
-  redis_data:
 
 networks:
   ibkr-network:
     driver: bridge
 
 services:
-  redis:
-    image: redis:8.2.0-alpine
-    container_name: redis
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - redis_data:/data
-      - /etc/localtime:/etc/localtime:ro
-    environment:
-      TZ: America/New_York
-    command: redis-server --appendonly yes
-    networks:
-      - ibkr-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   ibkr-gateway:
     image: gnzsnz/ib-gateway:10.39.1d
     container_name: ibkr-gateway
     ports:
       - "127.0.0.1:4001:4003"
       - "127.0.0.1:4002:4004"
-      - "0.0.0.0:5900:5900"    
+      - "0.0.0.0:5900:5900"
     environment:
       TWS_USERID: ${IB_USERNAME}
       TWS_PASSWORD: ${IB_PASSWORD}
@@ -55,7 +34,7 @@ services:
     volumes:
       - ib_data:/home/ibgateway
       - /etc/localtime:/etc/localtime:ro
-    healthcheck:      
+    healthcheck:
       test: ["CMD", "sleep", "60"] # wait for 1 minute to fpr gateway to complete login workflow
       interval: 5s
       timeout: 70s # must be greater than sleep time
@@ -69,20 +48,23 @@ services:
       args:
         VERSION: *system-version
     container_name: event-broker
-    environment:      
-      REDIS_HOST: redis
+    environment:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SERVICE_VERSION: *system-version
-      REBALANCE_EVENT_SUBSCRIPTION_API_KEY: ${REBALANCE_EVENT_SUBSCRIPTION_API_KEY}
+      REALTIME_API_KEY: ${REBALANCE_EVENT_SUBSCRIPTION_API_KEY}
       TRADING_MODE: ${TRADING_MODE:-paper}
+      IB_HOST: ibkr-gateway
+      ALLOCATIONS_BASE_URL: ${ALLOCATIONS_BASE_URL:-https://workers.fintech.zehnlabs.com/api/v1/strategies}
+      ALLOCATIONS_API_KEY: ${ALLOCATIONS_API_KEY}
       TZ: America/New_York
     depends_on:
-      redis:
+      ibkr-gateway:
         condition: service_healthy
     volumes:
       - ./event-broker/logs:/app/logs
-      - ./accounts.yaml:/app/config/accounts.yaml
-      - ./event-broker/config.yaml:/app/config/config.yaml
+      - ./accounts.yaml:/app/accounts.yaml:ro
+      - ./replacement-sets.yaml:/app/replacement-sets.yaml:ro
+      - ./manual-events:/app/manual-events
       - /etc/localtime:/etc/localtime:ro
     networks:
       - ibkr-network
@@ -91,45 +73,7 @@ services:
       options:
         max-size: "100m"
         max-file: "365"
-    restart: unless-stopped      
-
-  event-processor:
-    container_name: event-processor
-    build:
-      context: ./event-processor
-      args:
-        VERSION: *system-version
-    environment:
-      IB_HOST: ibkr-gateway
-      TRADING_MODE: ${TRADING_MODE:-paper}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      ALLOCATIONS_API_KEY: ${ALLOCATIONS_API_KEY}
-      USER_NOTIFICATIONS_ENABLED: ${USER_NOTIFICATIONS_ENABLED:-false}
-      USER_NOTIFICATIONS_CHANNEL_PREFIX: ${USER_NOTIFICATIONS_CHANNEL_PREFIX:-ZLF-2025}
-      USER_NOTIFICATIONS_SERVER_URL: ${USER_NOTIFICATIONS_SERVER_URL:-https://ntfy.sh}
-      USER_NOTIFICATIONS_AUTH_TOKEN: ${USER_NOTIFICATIONS_AUTH_TOKEN:-}
-      USER_NOTIFICATIONS_BUFFER_SECONDS: ${USER_NOTIFICATIONS_BUFFER_SECONDS:-60}
-      SERVICE_VERSION: *system-version
-      TZ: America/New_York
-    volumes:
-      - ./event-processor/config.yaml:/app/config/config.yaml
-      - ./event-processor/logs:/app/logs
-      - ./accounts.yaml:/app/accounts.yaml
-      - ./replacement-sets.yaml:/app/replacement-sets.yaml
-      - /etc/localtime:/etc/localtime:ro
-    networks:
-      - ibkr-network
-    depends_on:
-      redis:
-        condition: service_healthy
-      ibkr-gateway:
-        condition: service_healthy        
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "365"
-    restart: on-failure
+    restart: unless-stopped
 
   management-service:
     build:
@@ -141,19 +85,15 @@ services:
     ports:
       - "0.0.0.0:8000:8000"
     environment:
-      REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SERVICE_VERSION: *system-version
       TZ: America/New_York
-    depends_on:
-      redis:
-        condition: service_healthy
     volumes:
       - ./management-service/config.yaml:/app/config.yaml
       - ./management-service/logs:/app/logs
       - ./accounts.yaml:/app/config/accounts.yaml:rw
       - ./accounts.example.yaml:/app/config/accounts.example.yaml
-      - ./replacement-sets.yaml:/app/config/replacement-sets.yaml:rw      
+      - ./replacement-sets.yaml:/app/config/replacement-sets.yaml:rw
       - ./.env:/app/config/.env:rw
       - ./.env.example:/app/config/.env.example
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -170,5 +110,4 @@ services:
       options:
         max-size: "100m"
         max-file: "365"
-    restart: unless-stopped 
-
+    restart: unless-stopped

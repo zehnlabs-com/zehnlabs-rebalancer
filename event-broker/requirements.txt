@@ -1,6 +1,6 @@
 ably==2.0.12
 PyYAML==6.0.2
-redis==6.2.0
-tenacity==9.1.2
 pydantic==2.11.7
-dependency-injector==4.48.1
+aiohttp==3.12.15
+ib-async==2.0.1
+tzdata==2025.2

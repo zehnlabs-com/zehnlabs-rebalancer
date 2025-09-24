@@ -1,8 +1,0 @@
-ib-async==2.0.1
-redis==6.2.0
-PyYAML==6.0.2
-pydantic==2.11.7
-aiohttp==3.12.15
-pandas==2.3.1
-tenacity==9.1.2
-dependency-injector==4.48.1
