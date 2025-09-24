@@ -23,6 +23,11 @@ accounts:
     # Percentage of equity to reserve as a buffer for quickly changing prices.
     # Valid values are 0% to 100%, default 0%
     cash_reserve_percent: 1.0
+    # Automatically deploy remaining cash into the position that can best absorb it
+    # Due to lack of fractional shares feature in IBKR API, there may be small amounts of uninvested cash
+    # This setting helps minimize uninvested cash by allowing slight over-allocation in one position
+    # Valid values: true or false
+    auto_deploy_remaining_cash: false
 
   # Account 2  
   ############
@@ -42,4 +47,9 @@ accounts:
     # Percentage of equity to reserve as a buffer for quickly changing prices.
     # Valid values are 0% to 100%, default 0%
     cash_reserve_percent: 1.0
+    # Automatically deploy remaining cash into the position that can best absorb it
+    # Due to lack of fractional shares feature in IBKR API, there may be small amounts of uninvested cash
+    # This setting helps minimize uninvested cash by allowing slight over-allocation in one position
+    # Valid values: true or false
+    auto_deploy_remaining_cash: false
 
