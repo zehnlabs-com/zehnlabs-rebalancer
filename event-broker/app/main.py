@@ -39,7 +39,7 @@ class EventBrokerApp:
             logger=logger
         )
         self.running = False
-        self.manual_event_file = "/app/manual-events/manual-event.json"
+        self.manual_event_file = "/app/manual-rebalance/rebalance.json"
 
     async def start(self):
         """Start the Enhanced Event Broker Service"""

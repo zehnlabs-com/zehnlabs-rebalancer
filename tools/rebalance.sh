@@ -18,7 +18,7 @@ set -e
 # Default values
 EXEC_COMMAND="print-rebalance"
 ACCOUNT_ID=""
-MANUAL_EVENT_FILE="./manual-events/manual-event.json"
+MANUAL_REBALANCE_FILE="./manual-rebalance/rebalance.json"
 
 # Function to show usage
 show_usage() {
@@ -94,11 +94,11 @@ if ! docker-compose ps event-broker | grep -q "Up"; then
     exit 1
 fi
 
-# Ensure manual-events directory exists
-mkdir -p manual-events
+# Ensure manual-rebalance directory exists
+mkdir -p manual-rebalance
 
 # Check if there's already a manual event file
-if [[ -f "$MANUAL_EVENT_FILE" ]]; then
+if [[ -f "$MANUAL_REBALANCE_FILE" ]]; then
     echo "Warning: Manual event file already exists. Previous event may still be processing."
     echo "Continue anyway? (y/N)"
     read -r response
@@ -106,7 +106,7 @@ if [[ -f "$MANUAL_EVENT_FILE" ]]; then
         echo "Cancelled."
         exit 1
     fi
-    rm -f "$MANUAL_EVENT_FILE"
+    rm -f "$MANUAL_REBALANCE_FILE"
 fi
 
 # Build the event JSON
@@ -115,7 +115,7 @@ echo "  Account: $ACCOUNT_ID"
 echo "  Command: $EXEC_COMMAND"
 
 # Create the event JSON (account-only design)
-cat > "$MANUAL_EVENT_FILE" <<EOF
+cat > "$MANUAL_REBALANCE_FILE" <<EOF
 {
   "account_id": "$ACCOUNT_ID",
   "exec": "$EXEC_COMMAND",
@@ -127,9 +127,9 @@ EOF
 echo ""
 echo "✅ Manual event created successfully!"
 echo ""
-echo "📁 Event file: $MANUAL_EVENT_FILE"
+echo "📁 Event file: $MANUAL_REBALANCE_FILE"
 echo "📋 Event content:"
-cat "$MANUAL_EVENT_FILE" | jq '.' 2>/dev/null || cat "$MANUAL_EVENT_FILE"
+cat "$MANUAL_REBALANCE_FILE" | jq '.' 2>/dev/null || cat "$MANUAL_REBALANCE_FILE"
 echo ""
 echo "📊 Monitor progress with:"
 echo "   docker-compose logs -f event-broker"

@@ -64,7 +64,7 @@ services:
       - ./event-broker/logs:/app/logs
       - ./accounts.yaml:/app/accounts.yaml:ro
       - ./replacement-sets.yaml:/app/replacement-sets.yaml:ro
-      - ./manual-events:/app/manual-events
+      - ./manual-rebalance:/app/manual-rebalance
       - /etc/localtime:/etc/localtime:ro
     networks:
       - ibkr-network

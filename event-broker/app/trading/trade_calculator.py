@@ -1,4 +1,4 @@
-"""Trade calculation logic"""
+"""Trade calculation logic with round-and-scale algorithm"""
 
 from typing import List, Dict, Optional
 import logging
@@ -18,7 +18,13 @@ class TradeCalculator:
         trades = []
         total_value = snapshot['total_value']
         cash_reserve = account_config.get('cash_reserve_percent', 1.0) / 100.0
+
+        # Always calculate target values based on total account value
+        # Cash constraints are handled in the scaling phase
         available_value = total_value * (1 - cash_reserve)
+
+        if phase == 'buy':
+            self.logger.debug(f"Buy phase: Target values based on total account ${available_value:,.2f}")
 
         # Create position map
         position_map = {pos['symbol']: pos for pos in snapshot.get('positions', [])}
@@ -35,7 +41,7 @@ class TradeCalculator:
                 if current_shares > 0:
                     current_price = market_prices.get(symbol)
                     if current_price and not math.isnan(current_price) and current_price > 0:
-                        self.logger.info(f"Liquidating orphaned position: {symbol} ({current_shares:,} shares @ ${current_price:.2f})")
+                        self.logger.info(f"Liquidating: {symbol} ({current_shares:,} shares @ ${current_price:.2f})")
                         trades.append({
                             'symbol': symbol,
                             'quantity': -current_shares,
@@ -64,9 +70,9 @@ class TradeCalculator:
             current_value = current_shares * current_price
             value_difference = target_value - current_value
 
-            # Calculate shares to trade
+            # Calculate shares to trade using rounding
             exact_shares = value_difference / current_price
-            shares_to_trade = int(exact_shares)
+            shares_to_trade = round(exact_shares)
 
             # Apply phase filter
             if phase == 'sell' and shares_to_trade >= 0:
@@ -94,179 +100,114 @@ class TradeCalculator:
         # Sort trades - sells first (negative quantities), then buys
         trades.sort(key=lambda x: x['quantity'])
 
-        # Auto-Deploy Remaining Cash: Deploy remaining cash into the position that can best absorb it
-        # This runs only for buy phase or 'all' phase to avoid double-processing
+        # Apply cash constraint scaling for buy phase
         if phase in ['buy', 'all']:
-            trades = self._auto_deploy_remaining_cash(
+            trades = self._apply_cash_constraint_scaling(
                 trades=trades,
                 snapshot=snapshot,
-                allocations=allocations,
-                market_prices=market_prices,
-                available_value=available_value,
-                position_map=position_map,
-                account_config=account_config
+                available_value=available_value
             )
 
         return trades
 
-    def _auto_deploy_remaining_cash(self, trades: List[dict], snapshot: dict, allocations: List[dict],
-                                   market_prices: Dict[str, float], available_value: float,
-                                   position_map: Dict[str, dict], account_config: dict) -> List[dict]:
-        """
-        Auto-Deploy Remaining Cash: Deploy remaining cash into the position that can best absorb it.
+    def _apply_cash_constraint_scaling(self, trades: List[dict], snapshot: dict, available_value: float) -> List[dict]:
+        """Apply cash constraint scaling to ensure trades fit within available cash"""
 
-        Purpose: After regular rebalancing trades are calculated, there's often cash left over
-        due to fractional share constraints. This opt-in mechanism deploys remaining cash into
-        the position that can best absorb it (largest positions with lowest over-allocation impact).
+        # Calculate total cost of buy orders
+        buy_trades = [t for t in trades if t['quantity'] > 0]
+        total_buy_cost = sum(t['quantity'] * t['price'] for t in buy_trades)
+        available_cash = snapshot.get('cash_balance', 0)
 
-        Algorithm:
-        1. Check if auto_deploy_remaining_cash is enabled for this account
-        2. Calculate projected cash after executing all planned trades
-        3. Find positions that can absorb cash (can buy at least 1 share)
-        4. Rank by: largest position size first, then lowest over-allocation percentage
-        5. Deploy all remaining cash into the best absorber position
+        # Only show detailed scaling logs if there's actually a constraint issue
+        if total_buy_cost > available_cash * 1.1:  # More than 10% over budget
+            self.logger.info(f"Cash Constraint Analysis (Pre-Sell Planning):")
+            self.logger.info(f"  Planned buy cost: ${total_buy_cost:,.2f}")
+            self.logger.info(f"  Current cash: ${available_cash:,.2f}")
+        else:
+            self.logger.debug(f"Cash check: ${total_buy_cost:,.2f} cost vs ${available_cash:,.2f} available")
 
-        Trade-off: Accepts slight over-allocation in one position to minimize uninvested cash.
+        # Always scale to fully utilize available cash (scale up or down as needed)
+        # This ensures we invest available cash rather than leaving it uninvested
+        total_account_value = snapshot.get('total_value', 0)
 
-        Args:
-            trades: List of already calculated trades
-            snapshot: Current account snapshot with positions and cash
-            allocations: Target allocations from API
-            market_prices: Current market prices for all symbols
-            available_value: Total account value available for investment
-            position_map: Dictionary mapping symbol to current position info
-            account_config: Account configuration including auto_deploy_remaining_cash setting
+        # Safety check - don't exceed reasonable limits
+        if total_buy_cost > total_account_value * 0.99:
+            self.logger.warning(f"  Buy cost ${total_buy_cost:,.2f} exceeds safe limit of account value ${total_account_value:,.2f}")
+            # Use account value as the constraint instead of cash balance
+            available_cash = min(available_cash, total_account_value * 0.99)
 
-        Returns:
-            Updated trades list with optional auto-deploy trade
-        """
-
-        # Step 1: Check if auto-deploy is enabled for this account
-        auto_deploy_enabled = account_config.get('auto_deploy_remaining_cash', False)
-        if not auto_deploy_enabled:
+        if abs(total_buy_cost - available_cash) < 100:  # Within $100, no scaling needed
+            self.logger.info(f"  Minimal adjustment needed (${abs(total_buy_cost - available_cash):.2f} difference)")
             return trades
 
-        # Step 2: Calculate projected cash after executing planned trades
-        current_cash = snapshot.get('cash_balance', 0)
+        # Apply scaling logic to fully utilize available cash
 
-        # Calculate net cash change from planned trades
-        net_cash_change = 0
+        # Separate fixed positions (1 share) from scaleable positions (>1 share)
+        fixed_trades = [t for t in trades if t['quantity'] <= 0 or t['quantity'] == 1]  # Include all sells and 1-share buys
+        scaleable_trades = [t for t in buy_trades if t['quantity'] > 1]
+
+        fixed_cost = sum(t['quantity'] * t['price'] for t in fixed_trades if t['quantity'] > 0)
+        scaleable_cost = sum(t['quantity'] * t['price'] for t in scaleable_trades)
+
+        # Calculate scaling factor for scaleable trades to use available cash
+        target_scaleable_cost = available_cash - fixed_cost
+        scaling_factor = target_scaleable_cost / scaleable_cost if scaleable_cost > 0 else 1.0
+
+        action = "scaling up" if scaling_factor > 1 else "scaling down"
+        self.logger.info(f"  Cash utilization scaling: {action} by factor {scaling_factor:.4f}")
+        self.logger.info(f"  Target deployment: ${available_cash:,.2f} (vs original ${total_buy_cost:,.2f})")
+
+        self.logger.debug(f"  Fixed cost: ${fixed_cost:,.2f}, Scaleable cost: ${scaleable_cost:,.2f}, Factor: {scaling_factor:.4f}")
+
+        # Apply scaling to trades
+        scaled_trades = []
+        total_scaled_cost = 0
+
         for trade in trades:
-            trade_value = trade['quantity'] * trade['price']
-            net_cash_change -= trade_value  # Negative for buys, positive for sells
+            if trade['quantity'] <= 0 or trade['quantity'] == 1:
+                # Keep sells and 1-share buys unchanged
+                scaled_trades.append(trade)
+                if trade['quantity'] > 0:
+                    total_scaled_cost += trade['quantity'] * trade['price']
+            else:
+                # Scale down multi-share positions, maintaining minimum of 1 share
+                original_quantity = trade['quantity']
+                scaled_quantity = max(1, int(1 + (original_quantity - 1) * scaling_factor))
 
-        projected_cash = current_cash + net_cash_change
+                scaled_trade = trade.copy()
+                scaled_trade['quantity'] = scaled_quantity
+                scaled_trades.append(scaled_trade)
+                total_scaled_cost += scaled_quantity * trade['price']
 
-        self.logger.info(f"Auto-Deploy Remaining Cash:")
-        self.logger.info(f"  Feature enabled: {auto_deploy_enabled}")
-        self.logger.info(f"  Current cash: ${current_cash:,.2f}")
-        self.logger.info(f"  Net cash change from trades: ${net_cash_change:,.2f}")
-        self.logger.info(f"  Projected cash after trades: ${projected_cash:,.2f}")
+                if scaled_quantity != original_quantity:
+                    self.logger.debug(f"  Scaled {trade['symbol']}: {original_quantity} → {scaled_quantity} shares")
 
-        # Skip auto-deploy if insufficient cash (less than $50 to avoid tiny over-allocations)
-        if projected_cash < 50:
-            self.logger.info(f"  Skipping auto-deploy: insufficient cash (${projected_cash:.2f})")
-            return trades
+        # Fine-tune if we're still over budget (due to integer rounding)
+        if total_scaled_cost > available_cash:
+            remaining_overage = total_scaled_cost - available_cash
+            self.logger.debug(f"  Fine-tuning required: ${remaining_overage:.2f} overage remaining")
 
-        # Step 3: Calculate projected position values after planned trades
-        projected_positions = {}
+            # Reduce the largest scaleable positions by 1 share until we fit
+            scaleable_scaled = [t for t in scaled_trades if t['quantity'] > 1]
+            scaleable_scaled.sort(key=lambda x: x['quantity'] * x['price'], reverse=True)
 
-        for allocation in allocations:
-            symbol = allocation['symbol']
-            current_position = position_map.get(symbol, {})
-            current_shares = current_position.get('quantity', 0)
-            current_price = market_prices.get(symbol, 0)
+            for trade in scaleable_scaled:
+                if total_scaled_cost <= available_cash:
+                    break
 
-            # Add shares from planned trades
-            planned_shares = 0
-            for trade in trades:
-                if trade['symbol'] == symbol:
-                    planned_shares += trade['quantity']
+                if trade['quantity'] > 1:
+                    reduction_value = trade['price']
+                    trade['quantity'] -= 1
+                    total_scaled_cost -= reduction_value
+                    self.logger.debug(f"  Fine-tuned {trade['symbol']}: reduced by 1 share")
 
-            total_shares = current_shares + planned_shares
-            projected_value = total_shares * current_price
-            target_percent = allocation['allocation'] / 100.0
-            target_value = available_value * target_percent
+        final_cost = sum(t['quantity'] * t['price'] for t in scaled_trades if t['quantity'] > 0)
+        remaining_cash = available_cash - final_cost
 
-            projected_positions[symbol] = {
-                'current_shares': current_shares,
-                'planned_shares': planned_shares,
-                'total_shares': total_shares,
-                'projected_value': projected_value,
-                'target_value': target_value,
-                'price': current_price
-            }
+        # Only show summary if we actually did meaningful scaling
+        if scaling_factor < 0.9:  # If we scaled down by more than 10%
+            self.logger.info(f"  Trades adjusted to fit available cash of ${available_cash:,.2f}")
 
-        # Step 4: Find best cash absorber
-        candidates = []
+        self.logger.debug(f"  Final cost: ${final_cost:,.2f}, Remaining: ${remaining_cash:.2f}")
 
-        for symbol, pos_info in projected_positions.items():
-            price = pos_info['price']
-            if price <= 0:
-                continue
-
-            shares_affordable = int(projected_cash / price)
-            if shares_affordable == 0:
-                continue  # Can't afford even 1 share
-
-            absorption_value = shares_affordable * price
-            new_value = pos_info['projected_value'] + absorption_value
-            target_value = pos_info['target_value']
-
-            # Calculate over-allocation percentage
-            over_allocation_pct = ((new_value - target_value) / target_value) * 100 if target_value > 0 else float('inf')
-
-            candidates.append({
-                'symbol': symbol,
-                'shares_to_buy': shares_affordable,
-                'absorption_value': absorption_value,
-                'projected_value': pos_info['projected_value'],
-                'new_value': new_value,
-                'target_value': target_value,
-                'over_allocation_pct': over_allocation_pct,
-                'position_size': pos_info['projected_value'],  # For ranking (larger is better)
-                'price': price,
-                'current_shares': pos_info['current_shares'],
-                'planned_shares': pos_info['planned_shares']
-            })
-
-        if not candidates:
-            self.logger.info(f"  No positions can absorb remaining cash")
-            return trades
-
-        # Sort by: largest position size first, then lowest over-allocation %
-        candidates.sort(key=lambda x: (-x['position_size'], x['over_allocation_pct']))
-
-        # Step 5: Deploy cash into best absorber
-        best_absorber = candidates[0]
-
-        self.logger.debug(f"  Best cash absorber candidates:")
-        for i, candidate in enumerate(candidates[:3]):  # Show top 3
-            self.logger.debug(f"    {i+1}. {candidate['symbol']}: {candidate['shares_to_buy']} shares "
-                           f"(${candidate['absorption_value']:.0f}), over-alloc: {candidate['over_allocation_pct']:.1f}%")
-
-        # Create auto-deploy trade
-        auto_deploy_trade = {
-            'symbol': best_absorber['symbol'],
-            'quantity': best_absorber['shares_to_buy'],
-            'current_shares': best_absorber['current_shares'] + best_absorber['planned_shares'],
-            'target_value': best_absorber['target_value'],
-            'current_value': best_absorber['projected_value'],
-            'price': best_absorber['price'],
-            'order_type': 'MARKET',
-            'auto_deploy': True  # Flag to identify auto-deploy trades in logs
-        }
-
-        remaining_cash = projected_cash - best_absorber['absorption_value']
-
-        self.logger.info(f"  Auto-Deploy Remaining Cash: BUY {best_absorber['shares_to_buy']} shares of {best_absorber['symbol']} "
-                       f"@ ${best_absorber['price']:.2f} = ${best_absorber['absorption_value']:.2f}")
-        self.logger.debug(f"  Over-allocation: {best_absorber['over_allocation_pct']:.2f}% "
-                       f"(${best_absorber['new_value']:.0f} vs ${best_absorber['target_value']:.0f} target)")
-        self.logger.info(f"  Potential Cash deployed: ${best_absorber['absorption_value']:.2f}")
-        self.logger.info(f"  Remaining cash: ${remaining_cash:.2f}")
-
-        # Combine original trades with auto-deploy trade
-        all_trades = trades + [auto_deploy_trade]
-
-        return all_trades
+        return scaled_trades

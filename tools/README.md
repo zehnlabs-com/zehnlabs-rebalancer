@@ -23,7 +23,7 @@ Account-based manual rebalancing script with validation and safety checks.
 
 ## How It Works
 
-1. **File-Based Events**: Scripts create JSON files in `manual-events/` directory
+1. **File-Based Events**: Scripts create JSON files in `manual-rebalance/` directory
 2. **Event-Broker Monitoring**: The event-broker watches for these files every second
 3. **Automatic Processing**: Files are processed immediately and deleted
 4. **Account Processing**: Direct account-based execution (no strategy grouping)
