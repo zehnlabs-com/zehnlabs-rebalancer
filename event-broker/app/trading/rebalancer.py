@@ -221,15 +221,16 @@ class Rebalancer:
 
         if positions:
             self.logger.info(f"Positions ({len(positions)}):")
-            for pos in positions:
+            sorted_positions = sorted(positions, key=lambda x: x['symbol'])
+            for pos in sorted_positions:
                 symbol = pos['symbol']
                 quantity = pos['quantity']
                 market_price = pos.get('market_price', 0)
                 market_value = pos.get('market_value', 0)
-                avg_cost = pos.get('avg_cost', 0)
+                percent_of_account = (market_value / total_value * 100) if total_value > 0 else 0
 
                 self.logger.info(f"  {symbol}: {quantity:,} shares @ ${market_price:.2f} "
-                               f"= ${market_value:,.2f} (avg cost: ${avg_cost:.2f})")
+                               f"= ${market_value:,.2f} ({percent_of_account:.2f}%)")
         else:
             self.logger.info("No positions held")
 
@@ -242,10 +243,11 @@ class Rebalancer:
 
     def _log_target_allocations(self, allocations: list):
         """Log target allocation percentages"""
-        self.logger.info("====== TARGET ALLOCATIONS ======")
+        self.logger.info(f"====== TARGET ALLOCATIONS ({len(allocations)}) ======")
         total_allocation = sum(alloc['allocation'] for alloc in allocations)
 
-        for alloc in allocations:
+        sorted_allocations = sorted(allocations, key=lambda x: x['symbol'])
+        for alloc in sorted_allocations:
             symbol = alloc['symbol']
             percentage = alloc['allocation']
             self.logger.info(f"  {symbol}: {percentage:.2f}%")
