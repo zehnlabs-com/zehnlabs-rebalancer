@@ -20,10 +20,16 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# Reduce verbosity of ib_async logs - set all ib_async loggers to WARNING level
+# Reduce verbosity of ib_async and ably logs - set to WARNING level
 # to prevent DEBUG/INFO logs from showing up
 ib_async_loggers = ['ib_async', 'ib_async.wrapper', 'ib_async.client', 'ib_async.ib']
 for logger_name in ib_async_loggers:
+    logger_instance = logging.getLogger(logger_name)
+    logger_instance.setLevel(logging.WARNING)
+
+# Reduce verbosity of ably logs
+ably_loggers = ['ably', 'ably.realtime', 'ably.realtime.realtime_channel']
+for logger_name in ably_loggers:
     logger_instance = logging.getLogger(logger_name)
     logger_instance.setLevel(logging.WARNING)
 
