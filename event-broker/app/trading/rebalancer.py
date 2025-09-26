@@ -202,6 +202,7 @@ class Rebalancer:
 
             if all_complete:
                 self.logger.info("All orders completed")
+                await asyncio.sleep(1)
                 return
 
             await asyncio.sleep(2)

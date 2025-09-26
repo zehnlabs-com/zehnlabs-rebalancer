@@ -92,30 +92,24 @@ class IBKRClient:
     async def get_account_snapshot(self, account_id: str) -> Dict[str, Any]:
         """Get account snapshot with positions and total value"""
         try:
-            # Use reqPositionsAsync() to force fresh position data from IBKR
-            # This is the proper async method for position requests
-            positions_list = await self.ib.reqPositionsAsync()
+            await self.ib.reqPositionsAsync()
 
-            # Filter positions for the specific account
-            portfolio_items = [pos for pos in positions_list if pos.account == account_id]
+            await asyncio.sleep(0.5)
+
+            portfolio_items = self.ib.portfolio(account=account_id)
 
             positions = []
 
             for item in portfolio_items:
-                # Position object from positions() has different structure than PortfolioItem
-                # Calculate market value from position and avg cost as approximation
-                market_value = item.position * item.avgCost if item.position and item.avgCost else 0
-
                 position = {
                     'symbol': item.contract.symbol,
                     'quantity': item.position,
-                    'market_price': item.avgCost,  # Use avgCost as market price approximation
-                    'market_value': market_value,
-                    'avg_cost': item.avgCost
+                    'market_price': item.marketPrice,
+                    'market_value': item.marketValue,
+                    'avg_cost': item.averageCost
                 }
                 positions.append(position)
 
-            # Get account values - use NetLiquidation as the definitive account value
             account_values = self.ib.accountValues(account=account_id)
             total_value = 0.0
             cash_balance = 0.0
