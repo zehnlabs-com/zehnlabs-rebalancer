@@ -74,6 +74,15 @@ class TradeCalculator:
             exact_shares = value_difference / current_price
             shares_to_trade = round(exact_shares)
 
+            # Skip sell orders if difference is less than 0.5%
+            if shares_to_trade < 0:
+                current_percent = (current_value / total_value * 100) if total_value > 0 else 0
+                target_percent_display = target_percent * 100
+                allocation_diff = abs(target_percent_display - current_percent)
+                if allocation_diff < 0.5:
+                    self.logger.debug(f"Skipping sell for {symbol}: {allocation_diff:.2f}% difference < 0.5% threshold (target={target_percent_display:.2f}%, current={current_percent:.2f}%)")
+                    continue
+
             # Apply phase filter
             if phase == 'sell' and shares_to_trade >= 0:
                 continue
