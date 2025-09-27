@@ -92,7 +92,7 @@ class IBKRClient:
     async def get_account_snapshot(self, account_id: str) -> Dict[str, Any]:
         """Get account snapshot with positions and total value"""
         try:
-            await self.ib.reqPositionsAsync()
+            await self.ib.reqAccountUpdatesAsync(account_id)
 
             await asyncio.sleep(0.5)
 
