@@ -7,8 +7,9 @@ while maintaining equivalent exposure through scaling factors.
 import os
 import yaml
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from dataclasses import dataclass
+from app.models import AllocationItem
 
 
 @dataclass
@@ -59,7 +60,7 @@ class ReplacementService:
         except Exception as e:
             self.logger.error(f"Failed to load replacement sets: {e}")
     
-    def apply_replacements_with_scaling(self, allocations: List[Dict[str, Any]], replacement_set_name: Optional[str]) -> List[Dict[str, Any]]:
+    def apply_replacements_with_scaling(self, allocations: List[AllocationItem], replacement_set_name: Optional[str]) -> List[AllocationItem]:
         """
         Apply ETF replacements with scaling, adjusting non-replaced allocations to maintain 100% total
 
@@ -89,28 +90,25 @@ class ReplacementService:
 
         
         for allocation in allocations:
-            symbol = allocation.get('symbol', allocation.get('ticker'))
-            allocation_percent = allocation.get('allocation', allocation.get('allocation_percent', 0))
+            symbol = allocation.symbol
+            allocation_percent = allocation.allocation
 
             if symbol in replacement_rules:
                 rule = replacement_rules[symbol]
                 old_allocation_percent = allocation_percent
                 new_allocation_percent = old_allocation_percent * rule.scale
 
-                # Create new allocation with replacement
                 modified_allocations.append({
                     'symbol': rule.target,
                     'allocation': new_allocation_percent
                 })
-                
-                # Track changes
+
                 excess = new_allocation_percent - old_allocation_percent
                 total_excess += excess
                 replaced_symbols.add(rule.target)
-                
+
                 self.logger.debug(f"Replaced {symbol} -> {rule.target}: {old_allocation_percent:.3f} -> {new_allocation_percent:.3f} (scale: {rule.scale})")
             else:
-                # Keep original allocation for now
                 modified_allocations.append({
                     'symbol': symbol,
                     'allocation': allocation_percent
@@ -161,18 +159,15 @@ class ReplacementService:
             else:
                 symbol_consolidation[symbol] = allocation['allocation']
 
-        # Convert back to allocation list
         consolidated_allocations = [
             {'symbol': symbol, 'allocation': total_allocation}
             for symbol, total_allocation in symbol_consolidation.items()
         ]
-        
-        # Verify and normalize final total to exactly 100%
+
         final_total = sum(a['allocation'] for a in consolidated_allocations)
         self.logger.debug(f"After consolidation: {len(consolidated_allocations)} unique symbols, total: {final_total:.3f}%")
 
-        # Normalize to exactly 100% if close but not exact
-        if final_total > 0 and abs(final_total - 100.0) > 0.001:  # More than 0.001% difference
+        if final_total > 0 and abs(final_total - 100.0) > 0.001:
             normalization_factor = 100.0 / final_total
             for allocation in consolidated_allocations:
                 allocation['allocation'] *= normalization_factor
@@ -183,5 +178,4 @@ class ReplacementService:
             if abs(final_total_after_norm - 100.0) > 1.0:
                 self.logger.warning(f"Final allocation total is {final_total_after_norm:.3f}%, not 100% - normalization failed")
 
-
-        return consolidated_allocations
+        return [AllocationItem(**alloc) for alloc in consolidated_allocations]

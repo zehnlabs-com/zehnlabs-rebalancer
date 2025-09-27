@@ -4,7 +4,8 @@ import os
 import json
 import aiohttp
 import logging
-from typing import List, Dict, Optional
+from typing import List, Optional
+from app.models import AllocationItem, AccountConfig
 
 class AllocationService:
     """Service for fetching target allocations from the API"""
@@ -14,10 +15,10 @@ class AllocationService:
         self.base_url = os.getenv('ALLOCATIONS_BASE_URL', 'https://fintech.zehnlabs.com/api')
         self.api_key = os.getenv('ALLOCATIONS_API_KEY')
 
-    async def get_allocations(self, account_config: dict) -> List[Dict]:
+    async def get_allocations(self, account_config: AccountConfig) -> List[AllocationItem]:
         """Fetch target allocations for a strategy"""
 
-        strategy_name = account_config.get('strategy_name')
+        strategy_name = account_config.strategy_name
         allocations_url = f"{self.base_url}/{strategy_name}/allocations"
 
         headers = {}
@@ -52,14 +53,13 @@ class AllocationService:
                     if not isinstance(allocations_list, list):
                         raise ValueError("Allocations must be a list")
 
-                    # Convert to our format
-                    allocations = []
-                    for item in allocations_list:
-                        allocations.append({
-                            'symbol': item.get('ticker', item.get('symbol')),
-                            'allocation': float(item.get('allocation', 0))
-                        })
-
+                    allocations = [
+                        AllocationItem(
+                            symbol=item.get('ticker', item.get('symbol')),
+                            allocation=float(item.get('allocation', 0))
+                        )
+                        for item in allocations_list
+                    ]
 
                     self.logger.info(f"Retrieved {len(allocations)} allocations for {strategy_name}")
                     return allocations

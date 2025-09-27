@@ -1,8 +1,9 @@
 """Simplified rebalancer without account locking"""
 
-from typing import List, Dict, Optional
+from typing import List, Optional
 from datetime import datetime
 import logging
+from app.models import AccountConfig, AccountSnapshot, AllocationItem, Trade, RebalanceResult, CalculateRebalanceResult
 
 class Rebalancer:
     """Simplified rebalancer without account locking"""
@@ -11,39 +12,34 @@ class Rebalancer:
         self.ibkr = ibkr_client
         self.logger = logger or logging.getLogger(__name__)
 
-    async def rebalance_account(self, account: dict):
+    async def rebalance_account(self, account: AccountConfig) -> RebalanceResult:
         """Execute rebalancing for account"""
         from .allocation_service import AllocationService
         from .replacement_service import ReplacementService
         from .trade_calculator import TradeCalculator
 
-        account_id = account['account_id']
+        account_id = account.account_id
         self.logger.info(f"Starting rebalance for account {account_id}")
 
         # Get target allocations
         allocation_service = AllocationService(logger=self.logger)
         allocations = await allocation_service.get_allocations(account)
 
-        # Apply replacements if needed
-        if account.get('replacement_set'):
+        if account.replacement_set:
             replacement_service = ReplacementService(logger=self.logger)
             allocations = replacement_service.apply_replacements_with_scaling(
                 allocations=allocations,
-                replacement_set_name=account['replacement_set']
+                replacement_set_name=account.replacement_set
             )
 
-        # Log target allocations
         self._log_target_allocations(allocations)
 
-        # Get current positions
         snapshot = await self.ibkr.get_account_snapshot(account_id)
 
-        # Log initial account snapshot
         self._log_account_snapshot("INITIAL", snapshot)
 
-        # Get market prices for all symbols
-        all_symbols = list(set([a['symbol'] for a in allocations] +
-                              [p['symbol'] for p in snapshot['positions']]))
+        all_symbols = list(set([a.symbol for a in allocations] +
+                              [p.symbol for p in snapshot.positions]))
         market_prices = await self.ibkr.get_multiple_market_prices(all_symbols)
 
         # Calculate required trades
@@ -61,27 +57,22 @@ class Rebalancer:
         # Log all planned orders
         self._log_planned_orders(trades)
 
-        # Execute sell orders first
-        sell_orders = [t for t in trades if t['quantity'] < 0]
+        sell_orders = [t for t in trades if t.quantity < 0]
         if sell_orders:
             self.logger.info(f"Executing {len(sell_orders)} sell orders")
             for trade in sell_orders:
                 order_result = await self.ibkr.place_order(
                     account_id=account_id,
-                    symbol=trade['symbol'],
-                    quantity=trade['quantity'],
-                    order_type=trade.get('order_type', 'MARKET')
+                    symbol=trade.symbol,
+                    quantity=trade.quantity,
+                    order_type=trade.order_type
                 )
-                # Store the order ID in the trade object for tracking
-                trade['order_id'] = order_result['order_id']
+                trade.order_id = order_result.order_id
 
-            # Wait for sells to complete
             await self._wait_for_orders_complete(sell_orders)
 
-        # Get updated snapshot after sells
         snapshot = await self.ibkr.get_account_snapshot(account_id)
 
-        # Recalculate buy orders with updated cash
         trades = calculator.calculate_trades(
             snapshot=snapshot,
             allocations=allocations,
@@ -90,69 +81,58 @@ class Rebalancer:
             phase='buy'
         )
 
-        # Execute buy orders
-        buy_orders = [t for t in trades if t['quantity'] > 0]
+        buy_orders = [t for t in trades if t.quantity > 0]
         if buy_orders:
             self.logger.info(f"Executing {len(buy_orders)} buy orders")
             for trade in buy_orders:
                 order_result = await self.ibkr.place_order(
                     account_id=account_id,
-                    symbol=trade['symbol'],
-                    quantity=trade['quantity'],
-                    order_type=trade.get('order_type', 'MARKET')
+                    symbol=trade.symbol,
+                    quantity=trade.quantity,
+                    order_type=trade.order_type
                 )
-                # Store the order ID in the trade object for tracking
-                trade['order_id'] = order_result['order_id']
+                trade.order_id = order_result.order_id
 
-            # Wait for buys to complete
             await self._wait_for_orders_complete(buy_orders)
 
-        # Get final account snapshot after all trades
         final_snapshot = await self.ibkr.get_account_snapshot(account_id)
         self._log_account_snapshot("FINAL", final_snapshot)
 
-        return {
-            'orders': sell_orders + buy_orders,
-            'total_value': final_snapshot['total_value'],
-            'success': True
-        }
+        return RebalanceResult(
+            orders=sell_orders + buy_orders,
+            total_value=final_snapshot.total_value,
+            success=True
+        )
 
-    async def calculate_rebalance(self, account: dict):
+    async def calculate_rebalance(self, account: AccountConfig) -> CalculateRebalanceResult:
         """Calculate rebalance without executing (print-rebalance)"""
         from .allocation_service import AllocationService
         from .replacement_service import ReplacementService
         from .trade_calculator import TradeCalculator
 
-        account_id = account['account_id']
+        account_id = account.account_id
         self.logger.info(f"Calculating rebalance for account {account_id}")
 
-        # Get target allocations
         allocation_service = AllocationService(logger=self.logger)
         allocations = await allocation_service.get_allocations(account)
 
-        # Apply replacements if needed
-        if account.get('replacement_set'):
+        if account.replacement_set:
             replacement_service = ReplacementService(logger=self.logger)
             allocations = replacement_service.apply_replacements_with_scaling(
                 allocations=allocations,
-                replacement_set_name=account['replacement_set']
+                replacement_set_name=account.replacement_set
             )
 
-        # Log target allocations
         self._log_target_allocations(allocations)
 
-        # Get current positions
         snapshot = await self.ibkr.get_account_snapshot(account_id)
 
-        # Log initial account snapshot
         self._log_account_snapshot("CURRENT", snapshot)
 
-        # Get market prices
-        all_symbols = list(set([a['symbol'] for a in allocations] +
-                              [p['symbol'] for p in snapshot['positions']]))
+        all_symbols = list(set([a.symbol for a in allocations] +
+                              [p.symbol for p in snapshot.positions]))
         market_prices = await self.ibkr.get_multiple_market_prices(all_symbols)
 
-        # Calculate required trades
         calculator = TradeCalculator(logger=self.logger)
         trades = calculator.calculate_trades(
             snapshot=snapshot,
@@ -161,26 +141,25 @@ class Rebalancer:
             account_config=account
         )
 
-        # Log proposed trades
         self._log_planned_orders(trades, is_preview=True)
 
-        return {
-            'proposed_trades': trades,
-            'current_value': snapshot['total_value'],
-            'success': True
-        }
+        return CalculateRebalanceResult(
+            proposed_trades=trades,
+            current_value=snapshot.total_value,
+            success=True
+        )
 
     async def _cancel_pending_orders(self, account_id: str):
         """Cancel any pending orders for the account"""
         try:
             open_orders = await self.ibkr.get_open_orders(account_id)
             for order in open_orders:
-                self.logger.info(f"Cancelling order {order['order_id']}")
-                await self.ibkr.cancel_order(order['order_id'])
+                self.logger.info(f"Cancelling order {order.order_id}")
+                await self.ibkr.cancel_order(order.order_id)
         except Exception as e:
             self.logger.warning(f"Error cancelling pending orders: {e}")
 
-    async def _wait_for_orders_complete(self, orders: List[dict], timeout: int = 60):
+    async def _wait_for_orders_complete(self, orders: List[Trade], timeout: int = 60):
         """Wait for orders to complete"""
         import asyncio
 
@@ -191,11 +170,10 @@ class Rebalancer:
         start_time = datetime.now()
 
         while (datetime.now() - start_time).total_seconds() < timeout:
-            # Check order status
             all_complete = True
             for order in orders:
-                status = await self.ibkr.get_order_status(order.get('order_id'))
-                self.logger.debug(f"Order {order.get('order_id')} status: '{status}'")
+                status = await self.ibkr.get_order_status(order.order_id)
+                self.logger.debug(f"Order {order.order_id} status: '{status}'")
                 if status and status.upper() not in ['FILLED', 'CANCELLED']:
                     all_complete = False
                     break
@@ -209,11 +187,11 @@ class Rebalancer:
 
         self.logger.warning(f"Timeout waiting for orders after {timeout} seconds")
 
-    def _log_account_snapshot(self, stage: str, snapshot: dict):
+    def _log_account_snapshot(self, stage: str, snapshot: AccountSnapshot):
         """Log detailed account snapshot"""
-        account_id = snapshot['account_id']
-        total_value = snapshot['total_value']
-        positions = snapshot.get('positions', [])
+        account_id = snapshot.account_id
+        total_value = snapshot.total_value
+        positions = snapshot.positions
 
         self.logger.info(f"====== {stage} ACCOUNT SNAPSHOT ======")
         self.logger.info(f"Account ID: {account_id}")
@@ -221,12 +199,12 @@ class Rebalancer:
 
         if positions:
             self.logger.info(f"Positions ({len(positions)}):")
-            sorted_positions = sorted(positions, key=lambda x: x['symbol'])
+            sorted_positions = sorted(positions, key=lambda x: x.symbol)
             for pos in sorted_positions:
-                symbol = pos['symbol']
-                quantity = pos['quantity']
-                market_price = pos.get('market_price', 0)
-                market_value = pos.get('market_value', 0)
+                symbol = pos.symbol
+                quantity = pos.quantity
+                market_price = pos.market_price
+                market_value = pos.market_value
                 percent_of_account = (market_value / total_value * 100) if total_value > 0 else 0
 
                 self.logger.info(f"  {symbol}: {quantity:,} shares @ ${market_price:.2f} "
@@ -234,28 +212,27 @@ class Rebalancer:
         else:
             self.logger.info("No positions held")
 
-        # Log actual cash balances from IBKR API
-        cash_balance = snapshot.get('cash_balance', 0)
-        settled_cash = snapshot.get('settled_cash', 0)
+        cash_balance = snapshot.cash_balance
+        settled_cash = snapshot.settled_cash
         self.logger.info(f"Cash Balance: ${cash_balance:,.2f}")
         self.logger.info(f"Settled Cash: ${settled_cash:,.2f}")
         self.logger.info("=" * 40)
 
-    def _log_target_allocations(self, allocations: list):
+    def _log_target_allocations(self, allocations: List[AllocationItem]):
         """Log target allocation percentages"""
         self.logger.info(f"====== TARGET ALLOCATIONS ({len(allocations)}) ======")
-        total_allocation = sum(alloc['allocation'] for alloc in allocations)
+        total_allocation = sum(alloc.allocation for alloc in allocations)
 
-        sorted_allocations = sorted(allocations, key=lambda x: x['symbol'])
+        sorted_allocations = sorted(allocations, key=lambda x: x.symbol)
         for alloc in sorted_allocations:
-            symbol = alloc['symbol']
-            percentage = alloc['allocation']
+            symbol = alloc.symbol
+            percentage = alloc.allocation
             self.logger.info(f"  {symbol}: {percentage:.2f}%")
 
         self.logger.info(f"Total Allocation: {total_allocation:.2f}%")
         self.logger.info("=" * 35)
 
-    def _log_planned_orders(self, trades: list, is_preview: bool = False):
+    def _log_planned_orders(self, trades: List[Trade], is_preview: bool = False):
         """Log planned orders/trades"""
         stage = "PROPOSED TRADES (PREVIEW)" if is_preview else "PLANNED ORDERS"
         self.logger.info(f"====== {stage} ======")
@@ -265,11 +242,11 @@ class Rebalancer:
             self.logger.info("=" * (len(stage) + 14))
             return
 
-        sell_orders = [t for t in trades if t['quantity'] < 0]
-        buy_orders = [t for t in trades if t['quantity'] > 0]
+        sell_orders = [t for t in trades if t.quantity < 0]
+        buy_orders = [t for t in trades if t.quantity > 0]
 
-        total_sell_value = sum(abs(t['quantity'] * t['price']) for t in sell_orders)
-        total_buy_value = sum(t['quantity'] * t['price'] for t in buy_orders)
+        total_sell_value = sum(abs(t.quantity * t.price) for t in sell_orders)
+        total_buy_value = sum(t.quantity * t.price for t in buy_orders)
 
         self.logger.info(f"Total Orders: {len(trades)} ({len(sell_orders)} sells, {len(buy_orders)} buys)")
         self.logger.info(f"Total Sell Value: ${total_sell_value:,.2f}")
@@ -279,10 +256,10 @@ class Rebalancer:
         if sell_orders:
             self.logger.info("SELL Orders:")
             for trade in sell_orders:
-                symbol = trade['symbol']
-                quantity = abs(trade['quantity'])
-                price = trade['price']
-                current_shares = trade['current_shares']
+                symbol = trade.symbol
+                quantity = abs(trade.quantity)
+                price = trade.price
+                current_shares = trade.current_shares
                 trade_value = quantity * price
                 self.logger.info(f"  SELL {quantity:,} shares of {symbol} @ ${price:.2f} "
                                f"= ${trade_value:,.2f} (from {current_shares:,} shares)")
@@ -290,10 +267,10 @@ class Rebalancer:
         if buy_orders:
             self.logger.info("BUY Orders:")
             for trade in buy_orders:
-                symbol = trade['symbol']
-                quantity = trade['quantity']
-                price = trade['price']
-                current_shares = trade['current_shares']
+                symbol = trade.symbol
+                quantity = trade.quantity
+                price = trade.price
+                current_shares = trade.current_shares
                 trade_value = quantity * price
                 self.logger.info(f"  BUY {quantity:,} shares of {symbol} @ ${price:.2f} "
                                f"= ${trade_value:,.2f} (to {current_shares + quantity:,} shares)")

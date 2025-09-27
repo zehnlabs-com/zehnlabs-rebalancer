@@ -3,8 +3,9 @@
 import asyncio
 import os
 import logging
-from typing import Dict, List, Optional, Any
+from typing import List, Optional
 from ib_async import IB, Stock, MarketOrder, Contract
+from app.models import AccountSnapshot, AccountPosition, OrderResult, OpenOrder
 
 class IBKRClient:
     """Simplified IBKR client with dedicated connection per account"""
@@ -89,7 +90,7 @@ class IBKRClient:
         """Check if connected to IBKR Gateway"""
         return self.ib.isConnected()
 
-    async def get_account_snapshot(self, account_id: str) -> Dict[str, Any]:
+    async def get_account_snapshot(self, account_id: str) -> AccountSnapshot:
         """Get account snapshot with positions and total value"""
         try:
             await self.ib.reqAccountUpdatesAsync(account_id)
@@ -98,17 +99,15 @@ class IBKRClient:
 
             portfolio_items = self.ib.portfolio(account=account_id)
 
-            positions = []
-
-            for item in portfolio_items:
-                position = {
-                    'symbol': item.contract.symbol,
-                    'quantity': item.position,
-                    'market_price': item.marketPrice,
-                    'market_value': item.marketValue,
-                    'avg_cost': item.averageCost
-                }
-                positions.append(position)
+            positions = [
+                AccountPosition(
+                    symbol=item.contract.symbol,
+                    quantity=item.position,
+                    market_price=item.marketPrice,
+                    market_value=item.marketValue
+                )
+                for item in portfolio_items
+            ]
 
             account_values = self.ib.accountValues(account=account_id)
             total_value = 0.0
@@ -124,20 +123,19 @@ class IBKRClient:
                     elif value.tag == 'SettledCash':
                         settled_cash = float(value.value)
 
-            return {
-                'account_id': account_id,
-                'positions': positions,
-                'total_value': total_value,
-                'cash_balance': cash_balance,
-                'settled_cash': settled_cash,
-                'timestamp': asyncio.get_event_loop().time()
-            }
+            return AccountSnapshot(
+                account_id=account_id,
+                positions=positions,
+                total_value=total_value,
+                cash_balance=cash_balance,
+                settled_cash=settled_cash
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to get account snapshot: {e}")
             raise
 
-    async def get_multiple_market_prices(self, symbols: List[str]) -> Dict[str, float]:
+    async def get_multiple_market_prices(self, symbols: List[str]) -> dict[str, float]:
         """Get market prices for multiple symbols using batch request"""
         prices = {}
 
@@ -245,7 +243,7 @@ class IBKRClient:
         self.logger.error(f"Failed to get price for {symbol} on any exchange")
         raise ValueError(f"Cannot obtain valid price for {symbol} from any exchange. Trading operations cannot proceed safely.")
 
-    async def place_order(self, account_id: str, symbol: str, quantity: int, order_type: str = 'MARKET') -> Dict[str, Any]:
+    async def place_order(self, account_id: str, symbol: str, quantity: int, order_type: str = 'MARKET') -> OrderResult:
         """Place an order"""
         try:
             # Create contract
@@ -267,18 +265,18 @@ class IBKRClient:
 
             self.logger.info(f"Placed order: {order.action} {order.totalQuantity} {symbol}")
 
-            return {
-                'order_id': trade.order.orderId,
-                'symbol': symbol,
-                'quantity': quantity,
-                'status': trade.orderStatus.status
-            }
+            return OrderResult(
+                order_id=trade.order.orderId,
+                symbol=symbol,
+                quantity=quantity,
+                status=trade.orderStatus.status
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to place order for {symbol}: {e}")
             raise
 
-    async def get_open_orders(self, account_id: str) -> List[Dict[str, Any]]:
+    async def get_open_orders(self, account_id: str) -> List[OpenOrder]:
         """Get open orders for account"""
         try:
             trades = self.ib.trades()
@@ -287,12 +285,13 @@ class IBKRClient:
             for trade in trades:
                 if (trade.order.account == account_id and
                     trade.orderStatus.status not in ['Filled', 'Cancelled']):
-                    open_orders.append({
-                        'order_id': trade.order.orderId,
-                        'symbol': trade.contract.symbol,
-                        'quantity': trade.order.totalQuantity,
-                        'status': trade.orderStatus.status
-                    })
+                    open_orders.append(OpenOrder(
+                        order_id=trade.order.orderId,
+                        symbol=trade.contract.symbol,
+                        quantity=trade.order.totalQuantity,
+                        status=trade.orderStatus.status,
+                        order_type='MARKET'
+                    ))
 
             return open_orders
 

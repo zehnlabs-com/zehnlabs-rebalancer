@@ -7,10 +7,11 @@ import signal
 import atexit
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List
 from contextlib import asynccontextmanager
+from app.models import AccountConfig, EventData
 
-def execute_strategy_batch(strategy_name: str, accounts: List[dict], event_data: dict, env: dict):
+def execute_strategy_batch(strategy_name: str, accounts: List[dict], event_data: dict, env: dict) -> dict:
     """
     Pure function that executes trades for all accounts in a strategy.
     Runs in subprocess for complete isolation.
@@ -71,44 +72,42 @@ async def process_strategy_accounts(strategy_name: str, accounts: List[dict], ev
 async def process_single_account(account: dict, client_id: int, event_data: dict):
     """Process a single account with dedicated IBKR client"""
 
-    account_id = account['account_id']
-    strategy_name = account['strategy_name']
+    account_config = AccountConfig(**account)
+    account_id = account_config.account_id
+    strategy_name = account_config.strategy_name
 
-    # All logs within this context automatically include account ID
     async with account_logger_context(account_id, strategy_name) as logger:
         manager = SubprocessManager()
 
         async with manager.managed_ibkr_client(account_id, client_id, logger) as ibkr:
-            # All IBKR operations here - connection is guaranteed to be cleaned up
-            sys.path.append('/app')  # Ensure we can import our modules
+            sys.path.append('/app')
             from app.trading.rebalancer import Rebalancer
 
             rebalancer = Rebalancer(ibkr, logger=logger)
 
             if event_data.get('exec') == 'rebalance':
                 logger.info("Executing LIVE rebalance")
-                result = await rebalancer.rebalance_account(account)
-                logger.info(f"Rebalance completed: {len(result.get('orders', []))} trades executed")
+                result = await rebalancer.rebalance_account(account_config)
+                logger.info(f"Rebalance completed: {len(result.orders)} trades executed")
                 return {
                     'success': True,
                     'action': 'rebalance',
-                    'trades_executed': len(result.get('orders', [])),
-                    'total_value': result.get('total_value')
+                    'trades_executed': len(result.orders),
+                    'total_value': result.total_value
                 }
 
             elif event_data.get('exec') == 'print-rebalance':
                 logger.info("Calculating rebalance (preview mode)")
-                result = await rebalancer.calculate_rebalance(account)
+                result = await rebalancer.calculate_rebalance(account_config)
 
-                proposed_trades = result.get('proposed_trades', [])
+                proposed_trades = result.proposed_trades
                 logger.info(f"Preview calculated: {len(proposed_trades)} proposed trades")
 
-                # Log each individual trade for visibility
                 if proposed_trades:
                     logger.info("=== PROPOSED TRADES ===")
                     for trade in proposed_trades:
-                        action = "BUY" if trade['quantity'] > 0 else "SELL"
-                        logger.info(f"{action} {abs(trade['quantity'])} shares of {trade['symbol']} @ ${trade.get('price', 'MARKET')}")
+                        action = "BUY" if trade.quantity > 0 else "SELL"
+                        logger.info(f"{action} {abs(trade.quantity)} shares of {trade.symbol} @ ${trade.price}")
                     logger.info("=====================")
                 else:
                     logger.info("No trades required - portfolio is already balanced")
@@ -117,8 +116,8 @@ async def process_single_account(account: dict, client_id: int, event_data: dict
                     'success': True,
                     'action': 'print-rebalance',
                     'proposed_trades': len(proposed_trades),
-                    'current_value': result.get('current_value'),
-                    'trades_detail': proposed_trades
+                    'current_value': result.current_value,
+                    'trades_detail': [trade.model_dump() for trade in proposed_trades]
                 }
 
             else:
