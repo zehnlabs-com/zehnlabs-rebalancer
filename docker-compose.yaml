@@ -56,6 +56,8 @@ services:
       IB_HOST: ibkr-gateway
       ALLOCATIONS_BASE_URL: ${ALLOCATIONS_BASE_URL:-https://workers.fintech.zehnlabs.com/api/v1/strategies}
       ALLOCATIONS_API_KEY: ${ALLOCATIONS_API_KEY}
+      USER_NOTIFICATIONS_ENABLED: ${USER_NOTIFICATIONS_ENABLED:-false}
+      USER_NOTIFICATIONS_CHANNEL: ${USER_NOTIFICATIONS_CHANNEL}
       TZ: America/New_York
     depends_on:
       ibkr-gateway:

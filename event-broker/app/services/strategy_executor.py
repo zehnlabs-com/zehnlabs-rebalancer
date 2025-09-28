@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ProcessPoolExecutor
+from .notification_service import NotificationService
 
 class StrategyExecutor:
     """Orchestrates parallel execution of strategy trading"""
@@ -14,6 +15,7 @@ class StrategyExecutor:
         self.logger = logger or logging.getLogger(__name__)
         self.active_strategies = set()  # Simple deduplication
         self.executor = ProcessPoolExecutor(max_workers=32)
+        self.notification_service = NotificationService(logger=logger)
 
     async def execute_strategy(self, strategy_name: str, accounts: List[dict], event_data: dict):
         """Execute strategy for all accounts in parallel subprocess"""
@@ -61,6 +63,9 @@ class StrategyExecutor:
             # Store detailed results for monitoring
             await self._store_execution_results(strategy_name, result)
 
+            # Send notifications for each account
+            await self._send_account_notifications(strategy_name, result)
+
             return result
 
         except Exception as e:
@@ -84,7 +89,9 @@ class StrategyExecutor:
             'IB_HOST': os.getenv('IB_HOST', 'ibkr-gateway'),
             'ALLOCATIONS_BASE_URL': os.getenv('ALLOCATIONS_BASE_URL', 'https://fintech.zehnlabs.com/api'),
             'ALLOCATIONS_API_KEY': os.getenv('ALLOCATIONS_API_KEY', ''),
-            'LOG_LEVEL': os.getenv('LOG_LEVEL', 'INFO')
+            'LOG_LEVEL': os.getenv('LOG_LEVEL', 'INFO'),
+            'USER_NOTIFICATIONS_ENABLED': os.getenv('USER_NOTIFICATIONS_ENABLED', 'false'),
+            'USER_NOTIFICATIONS_CHANNEL': os.getenv('USER_NOTIFICATIONS_CHANNEL', '')
         }
 
         # Only include IB_PORT if explicitly set (allow automatic port detection otherwise)
@@ -127,6 +134,28 @@ class StrategyExecutor:
                         'error': account_result.get('error')
                     }
                 )
+
+    async def _send_account_notifications(self, strategy_name: str, result: dict):
+        """Send ntfy notifications for each account result"""
+
+        timestamp = result.get('timestamp', datetime.now().isoformat())
+        operation = result.get('event', 'unknown')        
+
+        for account_result in result.get('results', []):
+            account_id = account_result.get('account_id')
+            success = account_result.get('success', False)
+            error = account_result.get('error')
+            details = account_result.get('details')
+
+            await self.notification_service.send_account_notification(
+                account_id=account_id,
+                strategy_name=strategy_name,
+                operation=operation,
+                timestamp=timestamp,
+                success=success,
+                error=error,
+                details=details
+            )
 
     def cleanup(self):
         """Cleanup resources"""
