@@ -93,21 +93,32 @@ class IBKRClient:
     async def get_account_snapshot(self, account_id: str) -> AccountSnapshot:
         """Get account snapshot with positions and total value"""
         try:
-            await self.ib.reqAccountUpdatesAsync(account_id)
+            all_positions = self.ib.positions()
+            account_positions = [p for p in all_positions if p.account == account_id]
 
-            await asyncio.sleep(0.5)
+            self.logger.info(f"Found {len(account_positions)} positions for account {account_id}")
 
-            portfolio_items = self.ib.portfolio(account=account_id)
+            # Get market prices for all positions
+            symbols = [pos.contract.symbol for pos in account_positions if pos.position != 0]
+            market_prices = await self.get_multiple_market_prices(symbols)
 
-            positions = [
-                AccountPosition(
-                    symbol=item.contract.symbol,
-                    quantity=item.position,
-                    market_price=item.marketPrice,
-                    market_value=item.marketValue
+            # Build positions list with market prices
+            positions = []
+            for pos in account_positions:
+                if pos.position == 0:
+                    continue  # Skip zero positions
+
+                symbol = pos.contract.symbol
+                market_price = market_prices.get(symbol, 0.0)
+
+                positions.append(
+                    AccountPosition(
+                        symbol=symbol,
+                        quantity=pos.position,
+                        market_price=market_price,
+                        market_value=pos.position * market_price
+                    )
                 )
-                for item in portfolio_items
-            ]
 
             account_values = self.ib.accountValues(account=account_id)
             total_value = 0.0
