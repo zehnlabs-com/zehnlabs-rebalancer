@@ -72,6 +72,7 @@ class Rebalancer:
             await self._wait_for_orders_complete(sell_orders)
 
         snapshot = await self.ibkr.get_account_snapshot(account_id)
+        self.logger.info(f"Cash balance after sells: ${snapshot.cash_balance:,.2f}")
 
         trades = calculator.calculate_trades(
             snapshot=snapshot,
