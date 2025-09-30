@@ -8,7 +8,7 @@ accounts:
   # Account 1
   ############
   # IBKR account ID
-  - account_id: "U123456"
+  - account_id: U123456
     # Account type: "paper" for paper trading, "live" for live trading
     # Only accounts matching TRADING_MODE environment variable will be processed
     type: paper
@@ -19,20 +19,15 @@ accounts:
     # Name of the strategy that this account will trade.
     # All lowercase letters, spaces replaced with hyphens.
     # You must have a valid subscription for this strategy.    
-    strategy_name: "etf-blend-200-35"
+    strategy_name: etf-blend-200-35
     # Percentage of equity to reserve as a buffer for quickly changing prices.
     # Valid values are 0% to 100%, default 0%
     cash_reserve_percent: 1.0
-    # Automatically deploy remaining cash into the position that can best absorb it
-    # Due to lack of fractional shares feature in IBKR API, there may be small amounts of uninvested cash
-    # This setting helps minimize uninvested cash by allowing slight over-allocation in one position
-    # Valid values: true or false
-    auto_deploy_remaining_cash: false
 
   # Account 2  
   ############
   # IBKR account ID
-  - account_id: "U654321"
+  - account_id: U654321
     # Account type: "paper" for paper trading, "live" for live trading
     # Only accounts matching TRADING_MODE environment variable will be processed
     type: paper
@@ -43,13 +38,8 @@ accounts:
     # Name of the strategy that this account will trade.
     # All lowercase letters, spaces replaced with hyphens.
     # You must have a valid subscription for this strategy.
-    strategy_name: "etf-blend-301-20" # Strategy name, all lowercase, spaces replaced with hyphens
+    strategy_name: etf-blend-301-20 # Strategy name, all lowercase, spaces replaced with hyphens
     # Percentage of equity to reserve as a buffer for quickly changing prices.
     # Valid values are 0% to 100%, default 0%
     cash_reserve_percent: 1.0
-    # Automatically deploy remaining cash into the position that can best absorb it
-    # Due to lack of fractional shares feature in IBKR API, there may be small amounts of uninvested cash
-    # This setting helps minimize uninvested cash by allowing slight over-allocation in one position
-    # Valid values: true or false
-    auto_deploy_remaining_cash: false
 

@@ -88,12 +88,18 @@ async def process_single_account(account: dict, client_id: int, event_data: dict
             if event_data.get('exec') == 'rebalance':
                 logger.info("Executing LIVE rebalance")
                 result = await rebalancer.rebalance_account(account_config)
+
+                if not result.success:
+                    logger.error(f"Rebalance failed: {result.error}")
+                    raise Exception(f"Rebalance failed: {result.error}")
+
                 logger.info(f"Rebalance completed: {len(result.orders)} trades executed")
                 return {
                     'success': True,
                     'action': 'rebalance',
                     'trades_executed': len(result.orders),
-                    'total_value': result.total_value
+                    'total_value': result.total_value,
+                    'cash_balance': result.cash_balance
                 }
 
             elif event_data.get('exec') == 'print-rebalance':

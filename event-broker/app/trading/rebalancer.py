@@ -21,89 +21,101 @@ class Rebalancer:
         account_id = account.account_id
         self.logger.info(f"Starting rebalance for account {account_id}")
 
-        # Get target allocations
-        allocation_service = AllocationService(logger=self.logger)
-        allocations = await allocation_service.get_allocations(account)
+        try:
+            # Get target allocations
+            allocation_service = AllocationService(logger=self.logger)
+            allocations = await allocation_service.get_allocations(account)
 
-        if account.replacement_set:
-            replacement_service = ReplacementService(logger=self.logger)
-            allocations = replacement_service.apply_replacements_with_scaling(
+            if account.replacement_set:
+                replacement_service = ReplacementService(logger=self.logger)
+                allocations = replacement_service.apply_replacements_with_scaling(
+                    allocations=allocations,
+                    replacement_set_name=account.replacement_set
+                )
+
+            self._log_target_allocations(allocations)
+
+            snapshot = await self.ibkr.get_account_snapshot(account_id)
+
+            self._log_account_snapshot("INITIAL", snapshot)
+
+            all_symbols = list(set([a.symbol for a in allocations] +
+                                  [p.symbol for p in snapshot.positions]))
+            market_prices = await self.ibkr.get_multiple_market_prices(all_symbols)
+
+            # Calculate required trades
+            calculator = TradeCalculator(logger=self.logger)
+            trades = calculator.calculate_trades(
+                snapshot=snapshot,
                 allocations=allocations,
-                replacement_set_name=account.replacement_set
+                market_prices=market_prices,
+                account_config=account
             )
 
-        self._log_target_allocations(allocations)
+            # Cancel any pending orders first
+            await self._cancel_pending_orders(account_id)
 
-        snapshot = await self.ibkr.get_account_snapshot(account_id)
+            # Log all planned orders
+            self._log_planned_orders(trades)
 
-        self._log_account_snapshot("INITIAL", snapshot)
+            sell_orders = [t for t in trades if t.quantity < 0]
+            if sell_orders:
+                self.logger.info(f"Executing {len(sell_orders)} sell orders")
+                for trade in sell_orders:
+                    order_result = await self.ibkr.place_order(
+                        account_id=account_id,
+                        symbol=trade.symbol,
+                        quantity=trade.quantity,
+                        order_type=trade.order_type
+                    )
+                    trade.order_id = order_result.order_id
 
-        all_symbols = list(set([a.symbol for a in allocations] +
-                              [p.symbol for p in snapshot.positions]))
-        market_prices = await self.ibkr.get_multiple_market_prices(all_symbols)
+                await self._wait_for_orders_complete(sell_orders)
 
-        # Calculate required trades
-        calculator = TradeCalculator(logger=self.logger)
-        trades = calculator.calculate_trades(
-            snapshot=snapshot,
-            allocations=allocations,
-            market_prices=market_prices,
-            account_config=account
-        )
+            snapshot = await self.ibkr.get_account_snapshot(account_id)
+            self.logger.info(f"Cash balance after sells: ${snapshot.cash_balance:,.2f}")
 
-        # Cancel any pending orders first
-        await self._cancel_pending_orders(account_id)
+            trades = calculator.calculate_trades(
+                snapshot=snapshot,
+                allocations=allocations,
+                market_prices=market_prices,
+                account_config=account,
+                phase='buy'
+            )
 
-        # Log all planned orders
-        self._log_planned_orders(trades)
+            buy_orders = [t for t in trades if t.quantity > 0]
+            if buy_orders:
+                self.logger.info(f"Executing {len(buy_orders)} buy orders")
+                for trade in buy_orders:
+                    order_result = await self.ibkr.place_order(
+                        account_id=account_id,
+                        symbol=trade.symbol,
+                        quantity=trade.quantity,
+                        order_type=trade.order_type
+                    )
+                    trade.order_id = order_result.order_id
 
-        sell_orders = [t for t in trades if t.quantity < 0]
-        if sell_orders:
-            self.logger.info(f"Executing {len(sell_orders)} sell orders")
-            for trade in sell_orders:
-                order_result = await self.ibkr.place_order(
-                    account_id=account_id,
-                    symbol=trade.symbol,
-                    quantity=trade.quantity,
-                    order_type=trade.order_type
-                )
-                trade.order_id = order_result.order_id
+                await self._wait_for_orders_complete(buy_orders)
 
-            await self._wait_for_orders_complete(sell_orders)
+            final_snapshot = await self.ibkr.get_account_snapshot(account_id)
+            self._log_account_snapshot("FINAL", final_snapshot)
 
-        snapshot = await self.ibkr.get_account_snapshot(account_id)
-        self.logger.info(f"Cash balance after sells: ${snapshot.cash_balance:,.2f}")
+            self.logger.info(f"Rebalance completed successfully for account {account_id}")
+            return RebalanceResult(
+                orders=sell_orders + buy_orders,
+                total_value=final_snapshot.total_value,
+                cash_balance=final_snapshot.cash_balance,
+                success=True
+            )
 
-        trades = calculator.calculate_trades(
-            snapshot=snapshot,
-            allocations=allocations,
-            market_prices=market_prices,
-            account_config=account,
-            phase='buy'
-        )
-
-        buy_orders = [t for t in trades if t.quantity > 0]
-        if buy_orders:
-            self.logger.info(f"Executing {len(buy_orders)} buy orders")
-            for trade in buy_orders:
-                order_result = await self.ibkr.place_order(
-                    account_id=account_id,
-                    symbol=trade.symbol,
-                    quantity=trade.quantity,
-                    order_type=trade.order_type
-                )
-                trade.order_id = order_result.order_id
-
-            await self._wait_for_orders_complete(buy_orders)
-
-        final_snapshot = await self.ibkr.get_account_snapshot(account_id)
-        self._log_account_snapshot("FINAL", final_snapshot)
-
-        return RebalanceResult(
-            orders=sell_orders + buy_orders,
-            total_value=final_snapshot.total_value,
-            success=True
-        )
+        except Exception as e:
+            self.logger.error(f"Rebalance failed for account {account_id}: {str(e)}")
+            return RebalanceResult(
+                orders=[],
+                total_value=0,
+                success=False,
+                error=str(e)
+            )
 
     async def calculate_rebalance(self, account: AccountConfig) -> CalculateRebalanceResult:
         """Calculate rebalance without executing (print-rebalance)"""
@@ -160,33 +172,49 @@ class Rebalancer:
         except Exception as e:
             self.logger.warning(f"Error cancelling pending orders: {e}")
 
-    async def _wait_for_orders_complete(self, orders: List[Trade], timeout: int = 60):
-        """Wait for orders to complete"""
+    async def _wait_for_orders_complete(self, orders: List[Trade], timeout: int = 300):
+        """Wait for orders to complete or fail"""
         import asyncio
 
         if not orders:
             return
 
+        # TWS API terminal states (DoneStates)
+        TERMINAL_STATES = ['FILLED', 'CANCELLED', 'APICANCELLED', 'INACTIVE']
+        FAILED_STATES = ['CANCELLED', 'APICANCELLED', 'INACTIVE']
+
         self.logger.info(f"Waiting for {len(orders)} orders to complete")
         start_time = datetime.now()
+        failed_orders = []
 
         while (datetime.now() - start_time).total_seconds() < timeout:
             all_complete = True
+            failed_orders = []
+
             for order in orders:
                 status = await self.ibkr.get_order_status(order.order_id)
-                self.logger.debug(f"Order {order.order_id} status: '{status}'")
-                if status and status.upper() not in ['FILLED', 'CANCELLED']:
+                self.logger.debug(f"Order {order.order_id} ({order.symbol} x{order.quantity}) status: '{status}'")
+
+                if status and status.upper() not in TERMINAL_STATES:
                     all_complete = False
-                    break
+                elif status and status.upper() in FAILED_STATES:
+                    failed_orders.append(order)
 
             if all_complete:
-                self.logger.info("All orders completed")
-                await asyncio.sleep(1)
-                return
+                if failed_orders:
+                    failed_details = [f"{o.symbol} x{o.quantity}" for o in failed_orders]
+                    error_msg = f"Orders failed: {', '.join(failed_details)}"
+                    self.logger.error(error_msg)
+                    raise Exception(error_msg)
+                else:
+                    self.logger.info("All orders completed successfully")
+                    await asyncio.sleep(1)
+                    return
 
             await asyncio.sleep(2)
 
-        self.logger.warning(f"Timeout waiting for orders after {timeout} seconds")
+        self.logger.error(f"CRITICAL: Orders timed out after {timeout} seconds")
+        raise Exception(f"Order execution timeout after {timeout} seconds")
 
     def _log_account_snapshot(self, stage: str, snapshot: AccountSnapshot):
         """Log detailed account snapshot"""

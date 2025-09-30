@@ -65,7 +65,7 @@ class NotificationService:
         # Format timestamp
         try:
             dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            time_str = dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+            time_str = dt.strftime('%Y-%m-%d %H:%M:%S ET')
         except:
             time_str = timestamp
 
@@ -82,8 +82,11 @@ class NotificationService:
             if operation == 'rebalance':
                 trades_count = details.get('trades_executed', 0)
                 total_value = details.get('total_value', 0)
+                cash_balance = details.get('cash_balance')
                 message_lines.append(f"Trades Executed: {trades_count}")
                 message_lines.append(f"Portfolio Value: ${total_value:,.2f}")
+                if cash_balance is not None:
+                    message_lines.append(f"Cash Balance: ${cash_balance:,.2f}")
             elif operation == 'print-rebalance':
                 proposed_count = details.get('proposed_trades', 0)
                 current_value = details.get('current_value', 0)
@@ -96,7 +99,7 @@ class NotificationService:
         await self._send_ntfy(
             title=title,
             message=message,
-            priority="low",
+            priority="default",
             tags=["white_check_mark"]
         )
 
@@ -113,7 +116,7 @@ class NotificationService:
         # Format timestamp
         try:
             dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            time_str = dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+            time_str = dt.strftime('%Y-%m-%d %H:%M:%S ET')
         except:
             time_str = timestamp
 

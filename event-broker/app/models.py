@@ -70,7 +70,9 @@ class StrategyExecutionResult(BaseModel):
 class RebalanceResult(BaseModel):
     orders: List[Trade]
     total_value: float
+    cash_balance: Optional[float] = None
     success: bool
+    error: Optional[str] = None
 
 
 class CalculateRebalanceResult(BaseModel):
