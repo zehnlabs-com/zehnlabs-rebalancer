@@ -3,9 +3,10 @@
 import asyncio
 import os
 import logging
+import math
 from typing import List, Optional
-from ib_async import IB, Stock, MarketOrder, Contract
-from app.models import AccountSnapshot, AccountPosition, OrderResult, OpenOrder
+from ib_async import IB, Stock, MarketOrder, LimitOrder, Contract
+from app.models import AccountSnapshot, AccountPosition, OrderResult, OpenOrder, ContractPrice
 
 class IBKRClient:
     """Simplified IBKR client with dedicated connection per account"""
@@ -68,8 +69,8 @@ class IBKRClient:
                 self.logger.error("Connection dropped immediately after connecting")
                 return False
 
-            # Set market data type for delayed data
-            self.ib.reqMarketDataType(3)
+            # Set market data type for live data
+            self.ib.reqMarketDataType(1)
             self.logger.info("Successfully connected to IBKR Gateway")
             return True
 
@@ -100,7 +101,8 @@ class IBKRClient:
 
             # Get market prices for all positions
             symbols = [pos.contract.symbol for pos in account_positions if pos.position != 0]
-            market_prices = await self.get_multiple_market_prices(symbols)
+            market_prices_list = await self.get_multiple_market_prices(symbols)
+            market_prices_map = {mp.symbol: mp for mp in market_prices_list}
 
             # Build positions list with market prices
             positions = []
@@ -109,7 +111,20 @@ class IBKRClient:
                     continue  # Skip zero positions
 
                 symbol = pos.contract.symbol
-                market_price = market_prices.get(symbol, 0.0)
+                price_data = market_prices_map.get(symbol)
+
+                # Validate price data exists
+                if not price_data:
+                    self.logger.error(f"No price data for position {symbol} in account snapshot")
+                    raise ValueError(f"No price data for {symbol}. Cannot generate account snapshot without valid prices.")
+
+                # Validate bid price (get_multiple_market_prices already validated this)
+                if not price_data.bid or price_data.bid <= 0:
+                    self.logger.error(f"Invalid bid price for position {symbol}: {price_data.bid}")
+                    raise ValueError(f"Invalid bid price for {symbol}: {price_data.bid}. Cannot generate account snapshot.")
+
+                # For positions, use bid price (what you'd get if you sold)
+                market_price = price_data.bid
 
                 positions.append(
                     AccountPosition(
@@ -146,9 +161,9 @@ class IBKRClient:
             self.logger.error(f"Failed to get account snapshot: {e}")
             raise
 
-    async def get_multiple_market_prices(self, symbols: List[str]) -> dict[str, float]:
+    async def get_multiple_market_prices(self, symbols: List[str]) -> List[ContractPrice]:
         """Get market prices for multiple symbols using batch request"""
-        prices = {}
+        prices = []
 
         try:
             # Create contracts for all symbols
@@ -158,6 +173,7 @@ class IBKRClient:
             qualified_contracts = []
             symbol_to_contract = {}
 
+            failed_to_qualify = []
             for contract in contracts:
                 try:
                     qualified = await self.ib.qualifyContractsAsync(contract)
@@ -165,12 +181,20 @@ class IBKRClient:
                         qualified_contract = qualified[0]
                         qualified_contracts.append(qualified_contract)
                         symbol_to_contract[qualified_contract.symbol] = qualified_contract
+                    else:
+                        failed_to_qualify.append(contract.symbol)
                 except Exception as e:
                     self.logger.debug(f"Failed to qualify contract for {contract.symbol}: {e}")
+                    failed_to_qualify.append(contract.symbol)
 
             if not qualified_contracts:
-                self.logger.error("No contracts could be qualified")
-                return {symbol: 0.0 for symbol in symbols}
+                self.logger.error(f"Failed to qualify any contracts for symbols: {symbols}")
+                raise ValueError(f"Contract qualification failed for all symbols: {symbols}. Cannot retrieve market prices without valid contracts.")
+
+            # If some contracts failed to qualify, this is also a critical issue
+            if failed_to_qualify:
+                self.logger.error(f"Failed to qualify contracts for {len(failed_to_qualify)} symbols: {failed_to_qualify}")
+                raise ValueError(f"Contract qualification failed for symbols: {failed_to_qualify}. All symbols must be qualified to proceed with rebalancing.")
 
             self.logger.info(f"Requesting batch prices for {len(qualified_contracts)} symbols...")
 
@@ -183,22 +207,31 @@ class IBKRClient:
 
             for ticker in tickers:
                 symbol = ticker.contract.symbol
-                price = None
 
-                # Try to get the best available price
-                if ticker.last and ticker.last > 0:
-                    price = ticker.last
-                elif ticker.close and ticker.close > 0:
-                    price = ticker.close
-                elif ticker.bid and ticker.ask and ticker.bid > 0 and ticker.ask > 0:
-                    price = (ticker.bid + ticker.ask) / 2  # Mid-point
-
-                if price and price > 0:
-                    prices[symbol] = price
-                    price_results.append(f"{symbol} -> ${price}")
-                else:
+                # Validate that BOTH bid and ask are available - required for trading
+                # Check for all invalid cases: None, -1, 0, negative, or NaN
+                if (ticker.bid is None or ticker.bid <= 0 or math.isnan(ticker.bid) or
+                    ticker.ask is None or ticker.ask <= 0 or math.isnan(ticker.ask)):
                     failed_symbols.append(symbol)
-                    self.logger.error(f"No valid price received for {symbol} from batch request")
+                    self.logger.error(f"Missing bid/ask prices for {symbol} (bid={ticker.bid}, ask={ticker.ask}). Cannot execute trades without valid market quotes.")
+                    continue
+
+                # Extract valid prices (bid/ask are guaranteed valid at this point)
+                # For last/close, default to 0.0 if invalid (these are optional for display purposes)
+                last = ticker.last if (ticker.last and ticker.last > 0 and not math.isnan(ticker.last)) else 0.0
+                close = ticker.close if (ticker.close and ticker.close > 0 and not math.isnan(ticker.close)) else 0.0
+
+                # Store all available prices
+                prices.append(ContractPrice(
+                    symbol=symbol,
+                    bid=ticker.bid,
+                    ask=ticker.ask,
+                    last=last,
+                    close=close
+                ))
+
+                # Log successful price retrieval
+                price_results.append(f"{symbol} -> ${ticker.ask:.2f}")
 
             # Log all successful prices in one concise line
             if price_results:
@@ -254,7 +287,7 @@ class IBKRClient:
         self.logger.error(f"Failed to get price for {symbol} on any exchange")
         raise ValueError(f"Cannot obtain valid price for {symbol} from any exchange. Trading operations cannot proceed safely.")
 
-    async def place_order(self, account_id: str, symbol: str, quantity: int, order_type: str = 'MARKET') -> OrderResult:
+    async def place_order(self, account_id: str, symbol: str, quantity: int, order_type: str = 'MARKET', price: float = None) -> OrderResult:
         """Place an order"""
         try:
             # Create contract
@@ -266,15 +299,23 @@ class IBKRClient:
 
             contract = qualified[0]
 
-            # Create order
-            order = MarketOrder('BUY' if quantity > 0 else 'SELL', abs(quantity))
+            # Create order based on type
+            action = 'BUY' if quantity > 0 else 'SELL'
+            if order_type == 'LIMIT' and price is not None:
+                order = LimitOrder(action, abs(quantity), price)
+            else:
+                order = MarketOrder(action, abs(quantity))
+
             order.account = account_id
 
             # Place order
             trade = self.ib.placeOrder(contract, order)
             await asyncio.sleep(1)  # Allow order to be processed
 
-            self.logger.info(f"Placed order: {order.action} {order.totalQuantity} {symbol}")
+            order_desc = f"{order.action} {order.totalQuantity} {symbol}"
+            if order_type == 'LIMIT':
+                order_desc += f" @ ${price}"
+            self.logger.info(f"Placed order: {order_desc}")
 
             return OrderResult(
                 order_id=trade.order.orderId,

@@ -45,12 +45,14 @@ class Rebalancer:
 
             # Calculate required trades
             calculator = TradeCalculator(logger=self.logger)
-            trades = calculator.calculate_trades(
+            result = calculator.calculate_trades(
                 snapshot=snapshot,
                 allocations=allocations,
                 market_prices=market_prices,
                 account_config=account
             )
+            trades = result.trades
+            warnings = result.warnings
 
             # Cancel any pending orders first
             await self._cancel_pending_orders(account_id)
@@ -66,7 +68,8 @@ class Rebalancer:
                         account_id=account_id,
                         symbol=trade.symbol,
                         quantity=trade.quantity,
-                        order_type=trade.order_type
+                        order_type=trade.order_type,
+                        price=trade.price
                     )
                     trade.order_id = order_result.order_id
 
@@ -75,37 +78,81 @@ class Rebalancer:
             snapshot = await self.ibkr.get_account_snapshot(account_id)
             self.logger.info(f"Cash balance after sells: ${snapshot.cash_balance:,.2f}")
 
-            trades = calculator.calculate_trades(
+            buy_result = calculator.calculate_trades(
                 snapshot=snapshot,
                 allocations=allocations,
                 market_prices=market_prices,
                 account_config=account,
                 phase='buy'
             )
+            warnings.extend(buy_result.warnings)
 
-            buy_orders = [t for t in trades if t.quantity > 0]
+            buy_orders = [t for t in buy_result.trades if t.quantity > 0]
             if buy_orders:
-                self.logger.info(f"Executing {len(buy_orders)} buy orders")
+                # Calculate available cash for buys (same logic as trade_calculator)
+                reserved_amount = min(100, snapshot.cash_balance * 0.05) if snapshot.cash_balance < 2000 else 100
+                available_cash = max(0, (snapshot.cash_balance - reserved_amount) / 1.01)
+
+                self.logger.info(f"Executing {len(buy_orders)} buy orders with ${available_cash:.2f} available cash")
+
+                # Build position map for quick lookup
+                position_map = {pos.symbol: pos for pos in snapshot.positions}
+
+                orders_to_execute = []
                 for trade in buy_orders:
+                    estimated_cost = trade.quantity * trade.price
+
+                    if estimated_cost > available_cash:
+                        # Check if symbol already exists in portfolio
+                        current_position = position_map.get(trade.symbol)
+                        if current_position and current_position.quantity > 0:
+                            # Symbol exists - skip this buy due to insufficient cash
+                            # This is normal operation, not a warning-worthy event
+                            self.logger.info(
+                                f"Skipped buy of {trade.symbol}: Insufficient cash "
+                                f"(${available_cash:.2f} available, ${estimated_cost:.2f} needed). "
+                                f"Symbol already held at {current_position.quantity} shares."
+                            )
+                            continue
+                        else:
+                            # Symbol missing - this is critical, must fail
+                            error_msg = (
+                                f"Cannot buy required symbol {trade.symbol}: Insufficient cash "
+                                f"(${available_cash:.2f} available, ${estimated_cost:.2f} needed). "
+                                f"All target symbols must be present in portfolio."
+                            )
+                            self.logger.error(error_msg)
+                            raise ValueError(error_msg)
+
+                    orders_to_execute.append(trade)
+                    available_cash -= estimated_cost  # Track remaining cash for subsequent orders
+
+                # Execute orders that passed the cash check
+                for trade in orders_to_execute:
                     order_result = await self.ibkr.place_order(
                         account_id=account_id,
                         symbol=trade.symbol,
                         quantity=trade.quantity,
-                        order_type=trade.order_type
+                        order_type=trade.order_type,
+                        price=trade.price
                     )
                     trade.order_id = order_result.order_id
 
-                await self._wait_for_orders_complete(buy_orders)
+                if orders_to_execute:
+                    await self._wait_for_orders_complete(orders_to_execute)
 
             final_snapshot = await self.ibkr.get_account_snapshot(account_id)
             self._log_account_snapshot("FINAL", final_snapshot)
 
             self.logger.info(f"Rebalance completed successfully for account {account_id}")
+            # Combine executed orders (some buy orders may have been skipped due to cash constraints)
+            executed_orders = sell_orders + (orders_to_execute if buy_orders else [])
             return RebalanceResult(
-                orders=sell_orders + buy_orders,
+                orders=executed_orders,
                 total_value=final_snapshot.total_value,
                 cash_balance=final_snapshot.cash_balance,
-                success=True
+                success=True,
+                warnings=warnings
             )
 
         except Exception as e:
@@ -147,19 +194,20 @@ class Rebalancer:
         market_prices = await self.ibkr.get_multiple_market_prices(all_symbols)
 
         calculator = TradeCalculator(logger=self.logger)
-        trades = calculator.calculate_trades(
+        result = calculator.calculate_trades(
             snapshot=snapshot,
             allocations=allocations,
             market_prices=market_prices,
             account_config=account
         )
 
-        self._log_planned_orders(trades, is_preview=True)
+        self._log_planned_orders(result.trades, is_preview=True)
 
         return CalculateRebalanceResult(
-            proposed_trades=trades,
+            proposed_trades=result.trades,
             current_value=snapshot.total_value,
-            success=True
+            success=True,
+            warnings=result.warnings
         )
 
     async def _cancel_pending_orders(self, account_id: str):
@@ -255,10 +303,10 @@ class Rebalancer:
         sorted_allocations = sorted(allocations, key=lambda x: x.symbol)
         for alloc in sorted_allocations:
             symbol = alloc.symbol
-            percentage = alloc.allocation
+            percentage = alloc.allocation * 100  # Convert fraction to percentage for display
             self.logger.info(f"  {symbol}: {percentage:.2f}%")
 
-        self.logger.info(f"Total Allocation: {total_allocation:.2f}%")
+        self.logger.info(f"Total Allocation: {total_allocation * 100:.2f}%")
         self.logger.info("=" * 35)
 
     def _log_planned_orders(self, trades: List[Trade], is_preview: bool = False):

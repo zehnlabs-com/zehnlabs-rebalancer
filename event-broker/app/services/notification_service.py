@@ -2,7 +2,7 @@
 
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 import aiohttp
 
@@ -39,7 +39,7 @@ class NotificationService:
             return
 
         try:
-            self.logger.info(f"Sending {'success' if success else 'failure'} notification for {account_id}")
+            self.logger.info(f"Sending {'SUCCESS' if success else 'FAILURE'} notification for {account_id}")
             if success:
                 await self._send_success_notification(
                     account_id, strategy_name, operation, timestamp, details
@@ -139,6 +139,59 @@ class NotificationService:
             priority="default",
             tags=["x"]
         )
+
+    async def send_warnings(
+        self,
+        account_id: str,
+        strategy_name: str,
+        operation: str,
+        warnings: List[str]
+    ):
+        """Send warning notifications for an account"""
+
+        if not self.enabled:
+            self.logger.info("Notifications disabled, skipping warnings")
+            return
+
+        if not self.channel_name:
+            self.logger.warning("USER_NOTIFICATIONS_CHANNEL not set, skipping warning notification")
+            return
+
+        if not warnings:
+            return
+
+        try:
+            self.logger.info(f"Sending {len(warnings)} warning(s) for {account_id}")
+
+            message_lines = [
+                f"Account: {account_id}",
+                f"Strategy: {strategy_name}",
+                f"Operation: {operation}",
+                "",
+                "Warnings:",
+                ""
+            ]
+
+            for i, warning in enumerate(warnings, 1):
+                if len(warnings) > 1:
+                    message_lines.append(f"{i}. {warning}")
+                else:
+                    message_lines.append(warning)
+                message_lines.append("")
+
+            message = "\n".join(message_lines)
+            title = f"⚠️ {operation.replace('-', ' ').title()} Warnings"
+
+            await self._send_ntfy(
+                title=title,
+                message=message,
+                priority="default",
+                tags=["warning"]
+            )
+
+            self.logger.info(f"Warning notification sent successfully for {account_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to send warning notification for {account_id}: {e}")
 
     async def _send_ntfy(
         self,

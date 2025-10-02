@@ -139,7 +139,7 @@ class StrategyExecutor:
         """Send ntfy notifications for each account result"""
 
         timestamp = result.get('timestamp', datetime.now().isoformat())
-        operation = result.get('event', 'unknown')        
+        operation = result.get('event', 'unknown')
 
         for account_result in result.get('results', []):
             account_id = account_result.get('account_id')
@@ -156,6 +156,15 @@ class StrategyExecutor:
                 error=error,
                 details=details
             )
+
+            # Send warnings if present
+            if details and details.get('warnings'):
+                await self.notification_service.send_warnings(
+                    account_id=account_id,
+                    strategy_name=strategy_name,
+                    operation=operation,
+                    warnings=details.get('warnings')
+                )
 
     def cleanup(self):
         """Cleanup resources"""

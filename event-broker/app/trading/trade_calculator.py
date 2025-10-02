@@ -3,7 +3,7 @@
 from typing import List, Optional
 import logging
 import math
-from app.models import AccountSnapshot, AllocationItem, AccountConfig, Trade
+from app.models import AccountSnapshot, AllocationItem, AccountConfig, Trade, ContractPrice, TradeCalculationResult
 
 class TradeCalculator:
     """Calculate trades needed for rebalancing"""
@@ -12,11 +12,15 @@ class TradeCalculator:
         self.logger = logger or logging.getLogger(__name__)
 
     def calculate_trades(self, snapshot: AccountSnapshot, allocations: List[AllocationItem],
-                        market_prices: dict[str, float], account_config: AccountConfig,
-                        phase: str = 'all') -> List[Trade]:
-        """Calculate required trades based on target allocations"""
+                        market_prices: List[ContractPrice], account_config: AccountConfig,
+                        phase: str = 'all') -> TradeCalculationResult:
+        """
+        Calculate required trades based on target allocations.
+        Returns TradeCalculationResult containing trades and warnings
+        """
 
         trades = []
+        warnings = []
         total_value = snapshot.total_value
         cash_reserve = account_config.cash_reserve_percent / 100.0
 
@@ -28,6 +32,7 @@ class TradeCalculator:
             self.logger.debug(f"Buy phase: Target values based on total account ${available_value:,.2f}")
 
         position_map = {pos.symbol: pos for pos in snapshot.positions}
+        price_map = {mp.symbol: mp for mp in market_prices}
 
         # Track total value allocated
         total_allocated_value = 0
@@ -38,47 +43,103 @@ class TradeCalculator:
             if symbol not in target_symbols:
                 current_shares = position.quantity
                 if current_shares > 0:
-                    current_price = market_prices.get(symbol)
-                    if current_price and not math.isnan(current_price) and current_price > 0:
-                        self.logger.info(f"Liquidating: {symbol} ({current_shares:,} shares @ ${current_price:.2f})")
-                        trades.append(Trade(
-                            symbol=symbol,
-                            quantity=int(-current_shares),
-                            current_shares=current_shares,
-                            target_value=0,
-                            current_value=current_shares * current_price,
-                            price=current_price,
-                            order_type='MARKET'
-                        ))
+                    price_data = price_map.get(symbol)
+
+                    # Validate price data exists
+                    if not price_data:
+                        self.logger.error(f"No price data for {symbol} to liquidate - rebalance cannot proceed")
+                        raise ValueError(f"No price data for {symbol}. Cannot liquidate position without valid price.")
+
+                    # Validate bid price is valid (get_multiple_market_prices already validated this)
+                    if not price_data.bid or price_data.bid <= 0 or math.isnan(price_data.bid):
+                        self.logger.error(f"Invalid bid price for {symbol}: {price_data.bid} - cannot liquidate")
+                        raise ValueError(f"Invalid bid price for {symbol}: {price_data.bid}. Cannot liquidate position.")
+
+                    # For sells, use bid price (what you receive)
+                    current_price = price_data.bid
+
+                    # Check if fractional position that cannot be liquidated via API
+                    if 0 < current_shares < 1:
+                        # Only warn during first phase (not during buy-only recalculation)
+                        if phase != 'buy':
+                            market_value = current_shares * current_price
+                            warning_message = (
+                                f"Position {symbol} ({current_shares:.4f} shares, ${market_value:.2f}) "
+                                f"cannot be liquidated via API.\n\n"
+                                f"IBKR API does not support liquidating fractional positions programmatically.\n\n"
+                                f"Please close this position manually using TWS desktop or IBKR Mobile app."
+                            )
+                            warnings.append(warning_message)
+                            self.logger.warning(
+                                f"Cannot liquidate fractional position via API: "
+                                f"{symbol} ({current_shares:.4f} shares). Manual intervention required."
+                            )
+                        continue  # Skip - cannot liquidate via API
+
+                    self.logger.info(f"Liquidating: {symbol} ({current_shares:,} shares @ ${current_price:.2f})")
+                    trades.append(Trade(
+                        symbol=symbol,
+                        quantity=int(-current_shares),
+                        current_shares=current_shares,
+                        target_value=0,
+                        current_value=current_shares * current_price,
+                        price=current_price,
+                        order_type='MARKET'
+                    ))
 
         for allocation in allocations:
             symbol = allocation.symbol
-            target_percent = allocation.allocation / 100.0
+            target_percent = allocation.allocation
             target_value = available_value * target_percent
 
             current_position = position_map.get(symbol)
             current_shares = current_position.quantity if current_position else 0
-            current_price = market_prices.get(symbol)
+            price_data = price_map.get(symbol)
 
-            if not current_price or math.isnan(current_price) or current_price == 0.0:
-                self.logger.error(f"Invalid price for {symbol}: {current_price} - rebalance cannot proceed")
-                raise ValueError(f"Invalid price for {symbol}: {current_price}. Rebalance aborted.")
+            if not price_data:
+                self.logger.error(f"No price data for {symbol} - rebalance cannot proceed")
+                raise ValueError(f"No price data for {symbol}. Rebalance aborted.")
+
+            # Validate that we have valid bid and ask prices
+            # The ibkr_client should have already validated this, but we double-check
+            if not price_data.bid or price_data.bid <= 0 or math.isnan(price_data.bid):
+                self.logger.error(f"Invalid bid price for {symbol}: {price_data.bid} - rebalance cannot proceed")
+                raise ValueError(f"Invalid bid price for {symbol}: {price_data.bid}. Rebalance aborted.")
+
+            if not price_data.ask or price_data.ask <= 0 or math.isnan(price_data.ask):
+                self.logger.error(f"Invalid ask price for {symbol}: {price_data.ask} - rebalance cannot proceed")
+                raise ValueError(f"Invalid ask price for {symbol}: {price_data.ask}. Rebalance aborted.")
+
+            # Use midpoint for current value calculation (bid and ask are guaranteed valid)
+            current_price = (price_data.bid + price_data.ask) / 2
 
             current_value = current_shares * current_price
             value_difference = target_value - current_value
 
-            # Calculate shares to trade using rounding
-            exact_shares = value_difference / current_price
+            # Determine if this will be a buy or sell, and use appropriate price
+            # For buy: use ask + 0.5% slippage (what you actually pay with limit order)
+            # For sell: use bid (what you receive)
+            if value_difference > 0:
+                # This will be a buy - use ask price with 0.5% slippage adjustment
+                # This ensures we calculate quantities based on the actual limit price we'll use
+                trade_price = price_data.ask * 1.005
+            else:
+                # This will be a sell - use bid price (guaranteed valid)
+                trade_price = price_data.bid
+
+            # Calculate shares to trade using the appropriate price
+            exact_shares = value_difference / trade_price
             shares_to_trade = round(exact_shares)
 
-            # Skip sell orders if difference is less than 0.5%
-            if shares_to_trade < 0:
-                current_percent = (current_value / total_value * 100) if total_value > 0 else 0
-                target_percent_display = target_percent * 100
-                allocation_diff = abs(target_percent_display - current_percent)
-                if allocation_diff < 0.5:
-                    self.logger.debug(f"Skipping sell for {symbol}: {allocation_diff:.2f}% difference < 0.5% threshold (target={target_percent_display:.2f}%, current={current_percent:.2f}%)")
-                    continue
+            # Skip orders (buy or sell) if allocation difference is less than 0.5%
+            current_percent = (current_value / total_value * 100) if total_value > 0 else 0
+            target_percent_display = target_percent * 100
+            allocation_diff = abs(target_percent_display - current_percent)
+
+            if allocation_diff < 0.5:
+                action = "sell" if shares_to_trade < 0 else "buy"
+                self.logger.debug(f"Skipping {action} for {symbol}: {allocation_diff:.2f}% difference < 0.5% threshold (target={target_percent_display:.2f}%, current={current_percent:.2f}%)")
+                continue
 
             # Apply phase filter
             if phase == 'sell' and shares_to_trade >= 0:
@@ -86,11 +147,17 @@ class TradeCalculator:
             elif phase == 'buy' and shares_to_trade <= 0:
                 continue
 
-
             if shares_to_trade != 0:
-                trade_value = shares_to_trade * current_price
+                trade_value = shares_to_trade * trade_price
                 total_allocated_value += abs(trade_value)
-                total_value_left_on_table += abs((exact_shares - shares_to_trade) * current_price)
+                total_value_left_on_table += abs((exact_shares - shares_to_trade) * trade_price)
+
+                # For buys, use LIMIT orders with 0.5% slippage protection
+                # For sells, use MARKET orders (already getting bid price)
+                if shares_to_trade > 0:
+                    order_type = 'LIMIT'
+                else:
+                    order_type = 'MARKET'
 
                 trades.append(Trade(
                     symbol=symbol,
@@ -98,8 +165,8 @@ class TradeCalculator:
                     current_shares=current_shares,
                     target_value=target_value,
                     current_value=current_value,
-                    price=current_price,
-                    order_type='MARKET'
+                    price=round(trade_price, 2),
+                    order_type=order_type
                 ))
 
 
@@ -110,17 +177,52 @@ class TradeCalculator:
             trades = self._apply_cash_constraint_scaling(
                 trades=trades,
                 snapshot=snapshot,
-                available_value=available_value
+                allocations=allocations
             )
 
-        return trades
+        return TradeCalculationResult(trades=trades, warnings=warnings)
 
-    def _apply_cash_constraint_scaling(self, trades: List[Trade], snapshot: AccountSnapshot, available_value: float) -> List[Trade]:
+    def _apply_cash_constraint_scaling(self, trades: List[Trade], snapshot: AccountSnapshot,
+                                        allocations: List[AllocationItem]) -> List[Trade]:
         """Apply cash constraint scaling to ensure trades fit within available cash"""
 
         buy_trades = [t for t in trades if t.quantity > 0]
         total_buy_cost = sum(t.quantity * t.price for t in buy_trades)
-        available_cash = snapshot.cash_balance
+
+        # Slippage is already included in t.price (ask * 1.005 for buys)
+        # Account for 1% commission on all trades and reserve $100 for subscription fees
+        # If cash balance is less than $100, available cash is 0 (can't make any trades)
+        if snapshot.cash_balance < 100:
+            available_cash = 0
+        else:
+            available_cash = (snapshot.cash_balance - 100) / 1.01
+
+        # Check if any target allocation symbols are missing from the account
+        target_symbols = {alloc.symbol for alloc in allocations}
+        current_symbols = {pos.symbol for pos in snapshot.positions if pos.quantity > 0}
+        missing_symbols = target_symbols - current_symbols
+
+        # If available cash is 0 and all symbols are present, skip rebalance entirely
+        if available_cash <= 0 and not missing_symbols:
+            self.logger.info(f"  All target symbols already present in account.")
+            self.logger.info(f"  No available cash for optimization (${snapshot.cash_balance:.2f} balance < $100 minimum).")
+            self.logger.info(f"  Skipping rebalance - minimum requirements already met.")
+            # Return only sell trades (keep liquidations)
+            return [t for t in trades if t.quantity <= 0]
+
+        # Calculate cost to buy 1 share of each missing symbol
+        if missing_symbols:
+            buy_trades_for_missing = [t for t in buy_trades if t.symbol in missing_symbols]
+            missing_symbols_cost = sum(t.price for t in buy_trades_for_missing)
+
+            if missing_symbols_cost > available_cash:
+                # Cannot afford to buy minimum required shares for missing symbols
+                missing_details = [f"{t.symbol} (${t.price:.2f})" for t in buy_trades_for_missing]
+                error_msg = (f"Insufficient funds to purchase required symbols. "
+                           f"Need ${missing_symbols_cost:.2f} but only ${available_cash:.2f} available. "
+                           f"Missing symbols: {', '.join(missing_details)}")
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
 
         # Only show detailed scaling logs if there's actually a constraint issue
         if total_buy_cost > available_cash * 1.1:  # More than 10% over budget
@@ -133,14 +235,10 @@ class TradeCalculator:
         total_account_value = snapshot.total_value
 
         # Safety check - don't exceed reasonable limits
-        if total_buy_cost > total_account_value * 0.99:
+        if total_buy_cost > total_account_value * 0.995:
             self.logger.warning(f"  Buy cost ${total_buy_cost:,.2f} exceeds safe limit of account value ${total_account_value:,.2f}")
             # Use account value as the constraint instead of cash balance
-            available_cash = min(available_cash, total_account_value * 0.99)
-
-        if abs(total_buy_cost - available_cash) < 100:  # Within $100, no scaling needed
-            self.logger.info(f"  Minimal adjustment needed (${abs(total_buy_cost - available_cash):.2f} difference)")
-            return trades
+            available_cash = min(available_cash, total_account_value * 0.995)
 
         # Apply scaling logic to fully utilize available cash
 

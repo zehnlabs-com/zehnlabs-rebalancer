@@ -99,7 +99,8 @@ async def process_single_account(account: dict, client_id: int, event_data: dict
                     'action': 'rebalance',
                     'trades_executed': len(result.orders),
                     'total_value': result.total_value,
-                    'cash_balance': result.cash_balance
+                    'cash_balance': result.cash_balance,
+                    'warnings': result.warnings
                 }
 
             elif event_data.get('exec') == 'print-rebalance':
@@ -123,7 +124,8 @@ async def process_single_account(account: dict, client_id: int, event_data: dict
                     'action': 'print-rebalance',
                     'proposed_trades': len(proposed_trades),
                     'current_value': result.current_value,
-                    'trades_detail': [trade.model_dump() for trade in proposed_trades]
+                    'trades_detail': [trade.model_dump() for trade in proposed_trades],
+                    'warnings': result.warnings
                 }
 
             else:

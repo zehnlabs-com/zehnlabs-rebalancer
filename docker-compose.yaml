@@ -34,10 +34,6 @@ services:
     volumes:
       - ib_data:/home/ibgateway
       - /etc/localtime:/etc/localtime:ro
-    healthcheck:
-      test: ["CMD", "sleep", "60"] # wait for 1 minute to fpr gateway to complete login workflow
-      interval: 5s
-      timeout: 70s # must be greater than sleep time
     networks:
       - ibkr-network
 
@@ -59,9 +55,6 @@ services:
       USER_NOTIFICATIONS_ENABLED: ${USER_NOTIFICATIONS_ENABLED:-false}
       USER_NOTIFICATIONS_CHANNEL: ${USER_NOTIFICATIONS_CHANNEL}
       TZ: America/New_York
-    depends_on:
-      ibkr-gateway:
-        condition: service_healthy
     volumes:
       - ./event-broker/logs:/app/logs
       - ./accounts.yaml:/app/accounts.yaml:ro

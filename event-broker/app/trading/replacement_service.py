@@ -165,17 +165,18 @@ class ReplacementService:
         ]
 
         final_total = sum(a['allocation'] for a in consolidated_allocations)
-        self.logger.debug(f"After consolidation: {len(consolidated_allocations)} unique symbols, total: {final_total:.3f}%")
+        self.logger.debug(f"After consolidation: {len(consolidated_allocations)} unique symbols, total: {final_total:.4f}")
 
-        if final_total > 0 and abs(final_total - 100.0) > 0.001:
-            normalization_factor = 100.0 / final_total
+        # Normalize to 1.0 (fractions, not percentages)
+        if final_total > 0 and abs(final_total - 1.0) > 0.0001:
+            normalization_factor = 1.0 / final_total
             for allocation in consolidated_allocations:
                 allocation['allocation'] *= normalization_factor
 
             final_total_after_norm = sum(a['allocation'] for a in consolidated_allocations)
-            self.logger.debug(f"Normalized allocations from {final_total:.3f}% to {final_total_after_norm:.3f}%")
+            self.logger.debug(f"Normalized allocations from {final_total:.4f} to {final_total_after_norm:.4f}")
 
-            if abs(final_total_after_norm - 100.0) > 1.0:
-                self.logger.warning(f"Final allocation total is {final_total_after_norm:.3f}%, not 100% - normalization failed")
+            if abs(final_total_after_norm - 1.0) > 0.01:
+                self.logger.warning(f"Final allocation total is {final_total_after_norm:.4f}, not 1.0 - normalization failed")
 
         return [AllocationItem(**alloc) for alloc in consolidated_allocations]

@@ -2,6 +2,14 @@ from typing import Optional, List, Literal
 from pydantic import BaseModel, Field
 
 
+class ContractPrice(BaseModel):
+    symbol: str
+    bid: float
+    ask: float
+    last: float
+    close: float
+
+
 class AccountPosition(BaseModel):
     symbol: str
     quantity: float
@@ -28,9 +36,14 @@ class Trade(BaseModel):
     current_shares: float
     target_value: float
     current_value: float
-    price: float
+    price: float  # Execution price: ask*1.005 (rounded) for buys, bid for sells
     order_type: str = 'MARKET'
     order_id: Optional[int] = None
+
+
+class TradeCalculationResult(BaseModel):
+    trades: List[Trade]
+    warnings: List[str] = Field(default_factory=list)
 
 
 class AccountConfig(BaseModel):
@@ -73,12 +86,14 @@ class RebalanceResult(BaseModel):
     cash_balance: Optional[float] = None
     success: bool
     error: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
 
 
 class CalculateRebalanceResult(BaseModel):
     proposed_trades: List[Trade]
     current_value: float
     success: bool
+    warnings: List[str] = Field(default_factory=list)
 
 
 class OrderResult(BaseModel):
