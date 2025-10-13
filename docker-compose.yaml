@@ -33,7 +33,6 @@ services:
       JAVA_HEAP_SIZE: 1024
     volumes:
       - ib_data:/home/ibgateway
-      - /etc/localtime:/etc/localtime:ro
     networks:
       - ibkr-network
     restart: unless-stopped
@@ -61,7 +60,6 @@ services:
       - ./accounts.yaml:/app/accounts.yaml:ro
       - ./replacement-sets.yaml:/app/replacement-sets.yaml:ro
       - ./manual-rebalance:/app/manual-rebalance
-      - /etc/localtime:/etc/localtime:ro
     networks:
       - ibkr-network
     logging:
