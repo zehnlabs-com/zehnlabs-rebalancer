@@ -177,13 +177,14 @@ class TradeCalculator:
             trades = self._apply_cash_constraint_scaling(
                 trades=trades,
                 snapshot=snapshot,
-                allocations=allocations
+                allocations=allocations,
+                phase=phase
             )
 
         return TradeCalculationResult(trades=trades, warnings=warnings)
 
     def _apply_cash_constraint_scaling(self, trades: List[Trade], snapshot: AccountSnapshot,
-                                        allocations: List[AllocationItem]) -> List[Trade]:
+                                        allocations: List[AllocationItem], phase: str) -> List[Trade]:
         """Apply cash constraint scaling to ensure trades fit within available cash"""
 
         buy_trades = [t for t in trades if t.quantity > 0]
@@ -211,7 +212,8 @@ class TradeCalculator:
             return [t for t in trades if t.quantity <= 0]
 
         # Calculate cost to buy 1 share of each missing symbol
-        if missing_symbols:
+        # ONLY check during buy phase - sells haven't executed yet during 'all' phase
+        if missing_symbols and phase == 'buy':
             buy_trades_for_missing = [t for t in buy_trades if t.symbol in missing_symbols]
             missing_symbols_cost = sum(t.price for t in buy_trades_for_missing)
 
