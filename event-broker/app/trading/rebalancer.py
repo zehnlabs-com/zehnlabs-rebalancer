@@ -141,7 +141,8 @@ class Rebalancer:
                 if orders_to_execute:
                     await self._wait_for_orders_complete(orders_to_execute)
 
-            final_snapshot = await self.ibkr.get_account_snapshot(account_id)
+            # Get final snapshot using cached prices to avoid rate limiting
+            final_snapshot = await self.ibkr.get_account_snapshot(account_id, use_cached_prices=True)
             self._log_account_snapshot("FINAL", final_snapshot)
 
             self.logger.info(f"Rebalance completed successfully for account {account_id}")

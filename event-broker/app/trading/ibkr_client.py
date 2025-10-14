@@ -4,9 +4,10 @@ import asyncio
 import os
 import logging
 import math
-from typing import List, Optional
+from typing import List, Optional, Dict
+from datetime import datetime
 from ib_async import IB, Stock, MarketOrder, LimitOrder, Contract
-from app.models import AccountSnapshot, AccountPosition, OrderResult, OpenOrder, ContractPrice
+from app.models import AccountSnapshot, AccountPosition, OrderResult, OpenOrder, ContractPrice, CachedPrice
 
 class IBKRClient:
     """Simplified IBKR client with dedicated connection per account"""
@@ -17,6 +18,10 @@ class IBKRClient:
         self.client_id = client_id
         self.logger = logger or logging.getLogger(__name__)
         self.host = os.getenv('IB_HOST', 'ibkr-gateway')
+
+        # Price cache: symbol -> CachedPrice
+        self._price_cache: Dict[str, CachedPrice] = {}
+        self._cache_ttl_seconds = 30
 
         # Automatically determine port based on trading mode
         self.port = self._determine_port()
@@ -91,8 +96,14 @@ class IBKRClient:
         """Check if connected to IBKR Gateway"""
         return self.ib.isConnected()
 
-    async def get_account_snapshot(self, account_id: str) -> AccountSnapshot:
-        """Get account snapshot with positions and total value"""
+    async def get_account_snapshot(self, account_id: str, use_cached_prices: bool = False) -> AccountSnapshot:
+        """Get account snapshot with positions and total value
+
+        Args:
+            account_id: The IBKR account ID
+            use_cached_prices: If True, uses cached prices (within TTL) instead of fetching fresh data.
+                              This avoids rate limiting when requesting the same symbols repeatedly.
+        """
         try:
             all_positions = self.ib.positions()
             account_positions = [p for p in all_positions if p.account == account_id]
@@ -101,7 +112,7 @@ class IBKRClient:
 
             # Get market prices for all positions
             symbols = [pos.contract.symbol for pos in account_positions if pos.position != 0]
-            market_prices_list = await self.get_multiple_market_prices(symbols)
+            market_prices_list = await self.get_multiple_market_prices(symbols, use_cache=use_cached_prices)
             market_prices_map = {mp.symbol: mp for mp in market_prices_list}
 
             # Build positions list with market prices
@@ -161,13 +172,44 @@ class IBKRClient:
             self.logger.error(f"Failed to get account snapshot: {e}")
             raise
 
-    async def get_multiple_market_prices(self, symbols: List[str]) -> List[ContractPrice]:
-        """Get market prices for multiple symbols using batch request"""
-        prices = []
+    async def get_multiple_market_prices(self, symbols: List[str], use_cache: bool = False) -> List[ContractPrice]:
+        """Get market prices for multiple symbols using batch request
 
+        Args:
+            symbols: List of stock symbols to fetch prices for
+            use_cache: If True, returns cached prices (within TTL) when available.
+                      Symbols not in cache will still be fetched from IBKR.
+        """
+        prices = []
+        symbols_to_fetch = []
+        now = datetime.now()
+
+        # Check cache first if requested
+        if use_cache:
+            for symbol in symbols:
+                cached_entry = self._price_cache.get(symbol)
+                if cached_entry:
+                    age_seconds = (now - cached_entry.cached_at).total_seconds()
+                    if age_seconds <= self._cache_ttl_seconds:
+                        # Cache hit - use cached price
+                        prices.append(cached_entry.price)
+                        self.logger.debug(f"Using cached price for {symbol} (age: {age_seconds:.1f}s)")
+                        continue
+                # Cache miss or expired - need to fetch
+                symbols_to_fetch.append(symbol)
+        else:
+            # Not using cache - fetch all symbols
+            symbols_to_fetch = symbols
+
+        # If all prices were in cache, return immediately
+        if not symbols_to_fetch:
+            self.logger.info(f"All {len(symbols)} prices retrieved from cache")
+            return prices
+
+        # Fetch remaining symbols from IBKR
         try:
-            # Create contracts for all symbols
-            contracts = [Stock(symbol, 'SMART', 'USD') for symbol in symbols]
+            # Create contracts for symbols not in cache
+            contracts = [Stock(symbol, 'SMART', 'USD') for symbol in symbols_to_fetch]
 
             # Qualify contracts
             qualified_contracts = []
@@ -188,8 +230,8 @@ class IBKRClient:
                     failed_to_qualify.append(contract.symbol)
 
             if not qualified_contracts:
-                self.logger.error(f"Failed to qualify any contracts for symbols: {symbols}")
-                raise ValueError(f"Contract qualification failed for all symbols: {symbols}. Cannot retrieve market prices without valid contracts.")
+                self.logger.error(f"Failed to qualify any contracts for symbols: {symbols_to_fetch}")
+                raise ValueError(f"Contract qualification failed for all symbols: {symbols_to_fetch}. Cannot retrieve market prices without valid contracts.")
 
             # If some contracts failed to qualify, this is also a critical issue
             if failed_to_qualify:
@@ -221,14 +263,20 @@ class IBKRClient:
                 last = ticker.last if (ticker.last and ticker.last > 0 and not math.isnan(ticker.last)) else 0.0
                 close = ticker.close if (ticker.close and ticker.close > 0 and not math.isnan(ticker.close)) else 0.0
 
-                # Store all available prices
-                prices.append(ContractPrice(
+                # Create price object
+                contract_price = ContractPrice(
                     symbol=symbol,
                     bid=ticker.bid,
                     ask=ticker.ask,
                     last=last,
                     close=close
-                ))
+                )
+
+                # Store in result list
+                prices.append(contract_price)
+
+                # Cache this price for future requests
+                self._price_cache[symbol] = CachedPrice(price=contract_price, cached_at=now)
 
                 # Log successful price retrieval
                 price_results.append(f"{symbol} -> ${ticker.ask:.2f}")

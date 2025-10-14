@@ -1,4 +1,5 @@
 from typing import Optional, List, Literal
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 
@@ -8,6 +9,12 @@ class ContractPrice(BaseModel):
     ask: float
     last: float
     close: float
+
+
+class CachedPrice(BaseModel):
+    """Cached price data with timestamp for TTL validation"""
+    price: ContractPrice
+    cached_at: datetime
 
 
 class AccountPosition(BaseModel):
