@@ -38,13 +38,24 @@ def execute_strategy_batch(strategy_name: str, accounts: List[dict], event_data:
         finally:
             loop.close()
 
+def extract_client_id_from_account(account_id: str) -> int:
+    """
+    Extract numeric portion of IBKR account ID to use as client ID.
+    E.g., 'U21240574' -> 21240574
+    This ensures unique client IDs across all accounts, preventing collisions
+    when multiple strategies execute in parallel.
+    """
+    numeric_part = ''.join(filter(str.isdigit, account_id))
+    return int(numeric_part)
+
 async def process_strategy_accounts(strategy_name: str, accounts: List[dict], event_data: dict):
     """Process all accounts for a strategy in parallel"""
 
     tasks = []
-    for i, account in enumerate(accounts):
-        # Deterministic client ID assignment
-        client_id = 1000 + (i * 100)  # 1000, 1100, 1200, ...
+    for account in accounts:
+        # Extract unique client ID from account ID (e.g., 'U21240574' -> 21240574)
+        # This ensures no collisions even when multiple strategies run in parallel
+        client_id = extract_client_id_from_account(account['account_id'])
 
         task = process_single_account(account, client_id, event_data)
         tasks.append(task)
