@@ -89,43 +89,69 @@ class Rebalancer:
 
             buy_orders = [t for t in buy_result.trades if t.quantity > 0]
             if buy_orders:
-                # Calculate available cash for buys (same logic as trade_calculator)
-                reserved_amount = min(100, snapshot.cash_balance * 0.05) if snapshot.cash_balance < 2000 else 100
-                available_cash = max(0, (snapshot.cash_balance - reserved_amount) / 1.01)
+                # Calculate available cash for buys (unified with trade_calculator formula)
+                if snapshot.cash_balance < 100:
+                    available_cash = 0
+                else:
+                    available_cash = (snapshot.cash_balance - 100) / 1.01
 
                 self.logger.info(f"Executing {len(buy_orders)} buy orders with ${available_cash:.2f} available cash")
 
-                # Build position map for quick lookup
+                # Build position map and allocation map for tracking skipped symbols
                 position_map = {pos.symbol: pos for pos in snapshot.positions}
+                allocation_map = {alloc.symbol: alloc.allocation for alloc in allocations}
 
+                # Track execution and skips
                 orders_to_execute = []
+                skipped_insufficient_cash = []
+
                 for trade in buy_orders:
                     estimated_cost = trade.quantity * trade.price
 
                     if estimated_cost > available_cash:
-                        # Check if symbol already exists in portfolio
+                        # Cannot afford this buy - skip it
                         current_position = position_map.get(trade.symbol)
-                        if current_position and current_position.quantity > 0:
-                            # Symbol exists - skip this buy due to insufficient cash
-                            # This is normal operation, not a warning-worthy event
-                            self.logger.info(
-                                f"Skipped buy of {trade.symbol}: Insufficient cash "
-                                f"(${available_cash:.2f} available, ${estimated_cost:.2f} needed). "
-                                f"Symbol already held at {current_position.quantity} shares."
-                            )
-                            continue
-                        else:
-                            # Symbol missing - this is critical, must fail
-                            error_msg = (
-                                f"Cannot buy required symbol {trade.symbol}: Insufficient cash "
-                                f"(${available_cash:.2f} available, ${estimated_cost:.2f} needed). "
-                                f"All target symbols must be present in portfolio."
-                            )
-                            self.logger.error(error_msg)
-                            raise ValueError(error_msg)
+                        is_missing = not (current_position and current_position.quantity > 0)
+                        allocation_pct = allocation_map.get(trade.symbol, 0) * 100
 
+                        skipped_insufficient_cash.append({
+                            'trade': trade,
+                            'shortfall': estimated_cost - available_cash,
+                            'is_missing': is_missing,
+                            'allocation_pct': allocation_pct
+                        })
+
+                        self.logger.info(
+                            f"Skipped buy of {trade.symbol} ({allocation_pct:.2f}% allocation): "
+                            f"Insufficient cash (${available_cash:.2f} available, ${estimated_cost:.2f} needed). "
+                            f"{'Missing from portfolio' if is_missing else 'Already held'}."
+                        )
+                        continue
+
+                    # Can afford - add to execution list
                     orders_to_execute.append(trade)
                     available_cash -= estimated_cost  # Track remaining cash for subsequent orders
+
+                # Generate warnings for skipped items
+                skipped_missing = [s for s in skipped_insufficient_cash if s['is_missing']]
+                skipped_existing = [s for s in skipped_insufficient_cash if not s['is_missing']]
+
+                if skipped_missing:
+                    for skip in skipped_missing:
+                        t = skip['trade']
+                        warning_msg = (
+                            f"Missing symbol {t.symbol} ({skip['allocation_pct']:.2f}% target allocation) "
+                            f"could not be purchased. Shortfall: ${skip['shortfall']:.2f}"
+                        )
+                        warnings.append(warning_msg)
+                        self.logger.warning(warning_msg)
+
+                if skipped_existing:
+                    # Less urgent - just info
+                    symbols_info = [f"{s['trade'].symbol} ({s['allocation_pct']:.2f}%)" for s in skipped_existing]
+                    info_msg = f"Portfolio optimization incomplete for: {', '.join(symbols_info)}"
+                    warnings.append(info_msg)
+                    self.logger.info(info_msg)
 
                 # Execute orders that passed the cash check
                 for trade in orders_to_execute:

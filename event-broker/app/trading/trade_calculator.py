@@ -170,7 +170,20 @@ class TradeCalculator:
                 ))
 
 
-        trades.sort(key=lambda x: x.quantity)
+        # Sort trades by priority: sells first, then buys by allocation % (highest first)
+        # Build allocation map for priority sorting
+        allocation_map = {alloc.symbol: alloc.allocation for alloc in allocations}
+
+        def sort_key(trade):
+            if trade.quantity < 0:
+                # Sells: sort by quantity (most negative first)
+                return (0, trade.quantity)
+            else:
+                # Buys: sort by allocation priority (highest % first)
+                allocation_pct = allocation_map.get(trade.symbol, 0)
+                return (1, -allocation_pct)  # Negative to sort descending
+
+        trades.sort(key=sort_key)
 
         # Apply cash constraint scaling for buy phase
         if phase in ['buy', 'all']:
@@ -211,20 +224,6 @@ class TradeCalculator:
             # Return only sell trades (keep liquidations)
             return [t for t in trades if t.quantity <= 0]
 
-        # Calculate cost to buy 1 share of each missing symbol
-        # ONLY check during buy phase - sells haven't executed yet during 'all' phase
-        if missing_symbols and phase == 'buy':
-            buy_trades_for_missing = [t for t in buy_trades if t.symbol in missing_symbols]
-            missing_symbols_cost = sum(t.price for t in buy_trades_for_missing)
-
-            if missing_symbols_cost > available_cash:
-                # Cannot afford to buy minimum required shares for missing symbols
-                missing_details = [f"{t.symbol} (${t.price:.2f})" for t in buy_trades_for_missing]
-                error_msg = (f"Insufficient funds to purchase required symbols. "
-                           f"Need ${missing_symbols_cost:.2f} but only ${available_cash:.2f} available. "
-                           f"Missing symbols: {', '.join(missing_details)}")
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
 
         # Only show detailed scaling logs if there's actually a constraint issue
         if total_buy_cost > available_cash * 1.1:  # More than 10% over budget
