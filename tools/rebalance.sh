@@ -134,9 +134,6 @@ echo ""
 echo "📊 Monitor progress with:"
 echo "   docker-compose logs -f event-broker"
 echo ""
-echo "🔍 Check execution results in:"
-echo "   ./event-broker/logs/executions/"
-echo ""
 
 # Inform about execution time
 if [[ "$EXEC_COMMAND" == "rebalance" ]]; then

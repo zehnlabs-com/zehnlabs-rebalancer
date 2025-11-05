@@ -60,9 +60,6 @@ class StrategyExecutor:
                     f"{failure.get('error', 'Unknown error')}"
                 )
 
-            # Store detailed results for monitoring
-            await self._store_execution_results(strategy_name, result)
-
             # Send notifications for each account
             await self._send_account_notifications(strategy_name, result)
 
@@ -100,40 +97,6 @@ class StrategyExecutor:
             env_vars['IB_PORT'] = ib_port
 
         return env_vars
-
-    async def _store_execution_results(self, strategy_name: str, result: dict):
-        """Store execution results for monitoring and debugging"""
-
-        try:
-            # Ensure logs directory exists
-            logs_dir = '/app/logs/executions'
-            os.makedirs(logs_dir, exist_ok=True)
-
-            # Write to structured log file for analysis
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f'{logs_dir}/{strategy_name}_{timestamp}.json'
-
-            import json
-            with open(filename, 'w') as f:
-                json.dump(result, f, indent=2, default=str)
-
-            self.logger.debug(f"Execution results stored in {filename}")
-
-        except Exception as e:
-            self.logger.warning(f"Failed to store execution results: {e}")
-
-        # Log to monitoring system for failed accounts
-        for account_result in result.get('results', []):
-            if not account_result.get('success', True):
-                self.logger.warning(
-                    f"ALERT: Account {account_result.get('account_id')} failed rebalancing",
-                    extra={
-                        'alert_type': 'rebalance_failure',
-                        'account_id': account_result.get('account_id'),
-                        'strategy': strategy_name,
-                        'error': account_result.get('error')
-                    }
-                )
 
     async def _send_account_notifications(self, strategy_name: str, result: dict):
         """Send ntfy notifications for each account result"""

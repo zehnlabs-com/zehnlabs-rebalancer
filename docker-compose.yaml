@@ -11,7 +11,7 @@ networks:
 
 services:
   ibkr-gateway:
-    image: gnzsnz/ib-gateway:10.39.1d
+    image: gnzsnz/ib-gateway:10.41.1c
     container_name: ibkr-gateway
     ports:
       - "127.0.0.1:4001:4003"
@@ -63,7 +63,6 @@ services:
       USER_NOTIFICATIONS_CHANNEL: ${USER_NOTIFICATIONS_CHANNEL}
       TZ: America/New_York
     volumes:
-      - ./event-broker/logs:/app/logs
       - ./accounts.yaml:/app/accounts.yaml:ro
       - ./replacement-sets.yaml:/app/replacement-sets.yaml:ro
       - ./manual-rebalance:/app/manual-rebalance

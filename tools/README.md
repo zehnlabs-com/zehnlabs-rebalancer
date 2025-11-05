@@ -52,11 +52,6 @@ Account-based manual rebalancing script with validation and safety checks.
 docker-compose logs -f event-broker
 ```
 
-**Check execution results:**
-```bash
-ls -la event-broker/logs/executions/
-```
-
 **Monitor all services:**
 ```bash
 docker-compose logs -f
