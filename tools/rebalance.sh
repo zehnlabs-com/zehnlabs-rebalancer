@@ -18,7 +18,7 @@ set -e
 # Default values
 EXEC_COMMAND="print-rebalance"
 ACCOUNT_ID=""
-MANUAL_REBALANCE_FILE="./manual-rebalance/rebalance.json"
+MANUAL_REBALANCE_FILE="./data/manual-rebalance/rebalance.json"
 
 # Function to show usage
 show_usage() {
@@ -95,7 +95,7 @@ if ! docker-compose ps event-broker | grep -q "Up"; then
 fi
 
 # Ensure manual-rebalance directory exists
-mkdir -p manual-rebalance
+mkdir -p data/manual-rebalance
 
 # Check if there's already a manual event file
 if [[ -f "$MANUAL_REBALANCE_FILE" ]]; then

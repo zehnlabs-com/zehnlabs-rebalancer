@@ -65,7 +65,6 @@ services:
     volumes:
       - ./accounts.yaml:/app/accounts.yaml:ro
       - ./replacement-sets.yaml:/app/replacement-sets.yaml:ro
-      - ./manual-rebalance:/app/manual-rebalance
       - ./data:/app/data
     networks:
       - ibkr-network
