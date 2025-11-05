@@ -120,6 +120,9 @@ class NotificationService:
         except:
             time_str = timestamp
 
+        # Detect PDT Protection errors for special handling
+        is_pdt_error = error and "PDT Protection" in error
+
         # Build message body
         message_lines = [
             f"Account: {account_id}",
@@ -127,17 +130,24 @@ class NotificationService:
             f"Operation: {operation}",
             f"Time: {time_str}",
             "",
-            f"Error: {error or 'Unknown error'}"
+            f"{'Reason' if is_pdt_error else 'Error'}: {error or 'Unknown error'}"
         ]
 
         message = "\n".join(message_lines)
-        title = f"❌ {operation.replace('-', ' ').title()} Failed"
+
+        # Use different title and emoji for PDT protection
+        if is_pdt_error:
+            title = f"🛡️ PDT Protection Active"
+            tags = ["shield", "warning"]
+        else:
+            title = f"❌ {operation.replace('-', ' ').title()} Failed"
+            tags = ["x"]
 
         await self._send_ntfy(
             title=title,
             message=message,
             priority="default",
-            tags=["x"]
+            tags=tags
         )
 
     async def send_warnings(

@@ -58,6 +58,6 @@ rest/
 test/
 CLAUDE.md
 
-
-
+# Runtime data
 manual-rebalance/
+data/last-executions/*.json

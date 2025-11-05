@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import List
 from contextlib import asynccontextmanager
 from app.models import AccountConfig, EventData
+from app.services.pdt_protection_service import PDTProtectionService
 
 def execute_strategy_batch(strategy_name: str, accounts: List[dict], event_data: dict, env: dict) -> dict:
     """
@@ -88,6 +89,22 @@ async def process_single_account(account: dict, client_id: int, event_data: dict
     strategy_name = account_config.strategy_name
 
     async with account_logger_context(account_id, strategy_name) as logger:
+        from app.services.pdt_protection_service import PDTProtectionService
+        pdt_service = PDTProtectionService(logger=logger)
+
+        # PDT Protection Pre-Check: Verify execution is allowed
+        if account_config.pdt_protection_enabled and event_data.get('exec') == 'rebalance':
+            check_result = pdt_service.is_execution_allowed(account_id)
+
+            if not check_result.allowed:
+                error_msg = (
+                    f"PDT Protection: Account {account_id} was already rebalanced earlier today "
+                    f"so it was skipped to protect against PDT. "
+                    f"You can manually rebalance after {check_result.next_allowed_time}."
+                )
+                logger.warning(error_msg)
+                raise Exception(error_msg)
+
         manager = SubprocessManager()
 
         async with manager.managed_ibkr_client(account_id, client_id, logger) as ibkr:
@@ -105,6 +122,10 @@ async def process_single_account(account: dict, client_id: int, event_data: dict
                     raise Exception(f"Rebalance failed: {result.error}")
 
                 logger.info(f"Rebalance completed: {len(result.orders)} trades executed")
+
+                # PDT Protection Post-Success: Record execution timestamp for all live rebalances
+                pdt_service.record_execution(account_id)
+
                 return {
                     'success': True,
                     'action': 'rebalance',

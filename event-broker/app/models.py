@@ -60,6 +60,7 @@ class AccountConfig(BaseModel):
     strategy_name: str
     cash_reserve_percent: float = 1.0
     replacement_set: Optional[str] = None
+    pdt_protection_enabled: bool = False
 
 
 class EventData(BaseModel):
@@ -116,3 +117,15 @@ class OpenOrder(BaseModel):
     quantity: int
     status: str
     order_type: str
+
+
+class PDTCheckResult(BaseModel):
+    """Result of PDT protection check"""
+    allowed: bool
+    next_allowed_time: Optional[str] = None
+
+
+class PDTExecutionInfo(BaseModel):
+    """PDT execution tracking information"""
+    last_executed: str
+    next_execution: str
