@@ -1,5 +1,7 @@
 x-system-version: &system-version "2.0.0"
 
+name: ibkr-portfolio-rebalancer
+
 volumes:
   ib_data:
 
@@ -35,6 +37,11 @@ services:
       - ib_data:/home/ibgateway
     networks:
       - ibkr-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
     restart: unless-stopped
 
   event-broker:
@@ -66,5 +73,5 @@ services:
       driver: "json-file"
       options:
         max-size: "100m"
-        max-file: "365"
+        max-file: "10"
     restart: unless-stopped
