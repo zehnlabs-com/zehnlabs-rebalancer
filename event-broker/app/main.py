@@ -10,6 +10,8 @@ import sys
 import logging
 import os
 import json
+from pathlib import Path
+from app_config import load_config
 from app.services.ably_service import AblyEventSubscriber
 from app.services.strategy_executor import StrategyExecutor
 
@@ -19,6 +21,17 @@ logging.basicConfig(
     format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Load configuration early
+logger = logging.getLogger(__name__)
+try:
+    config_path = Path(os.getenv('CONFIG_PATH', '/app/config.yaml'))
+    logger.info(f"Loading configuration from: {config_path}")
+    load_config(config_path)
+    logger.info("Configuration loaded successfully")
+except Exception as e:
+    logger.error(f"Failed to load configuration: {e}")
+    sys.exit(1)
 
 # Reduce verbosity of ib_async and ably logs - set to WARNING level
 # to prevent DEBUG/INFO logs from showing up
@@ -33,19 +46,19 @@ for logger_name in ably_loggers:
     logger_instance = logging.getLogger(logger_name)
     logger_instance.setLevel(logging.WARNING)
 
-logger = logging.getLogger(__name__)
-
 class EventBrokerApp:
     """Main application class for the Enhanced Event Broker Service"""
 
     def __init__(self):
+        from app_config import get_config
+        self.config = get_config()
         self.strategy_executor = StrategyExecutor(logger=logger)
         self.ably_subscriber = AblyEventSubscriber(
             strategy_executor=self.strategy_executor,
             logger=logger
         )
         self.running = False
-        self.manual_event_file = "/app/data/manual-rebalance/rebalance.json"
+        self.manual_event_file = self.config.service.manual_event_file_path
 
     async def start(self):
         """Start the Enhanced Event Broker Service"""
@@ -92,7 +105,7 @@ class EventBrokerApp:
         """Keep the service running and handle graceful shutdown"""
         try:
             while self.running:
-                await asyncio.sleep(1)
+                await asyncio.sleep(self.config.service.heartbeat_interval_seconds)
         except asyncio.CancelledError:
             logger.info("Service shutdown requested")
             await self.stop()
@@ -105,10 +118,10 @@ class EventBrokerApp:
             try:
                 if os.path.exists(self.manual_event_file):
                     await self._process_manual_event()
-                await asyncio.sleep(1)  # Check every second
+                await asyncio.sleep(self.config.service.manual_event_check_interval_seconds)
             except Exception as e:
                 logger.error(f"Error in manual event watcher: {e}")
-                await asyncio.sleep(5)  # Wait longer on error
+                await asyncio.sleep(self.config.service.error_recovery_delay_seconds)
 
     async def _process_manual_event(self):
         """Process a manual event file"""

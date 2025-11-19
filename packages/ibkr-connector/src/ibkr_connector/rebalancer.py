@@ -14,6 +14,7 @@ try:
         AllocationItem,
         AccountConfig,
     )
+    from app_config import get_config
     from rebalance_calculator import TradeCalculator
     from .allocation_service import AllocationService
     from .replacement_service import ReplacementService
@@ -28,6 +29,7 @@ class IBKRRebalancer(BaseRebalancer):
     """Simplified rebalancer without account locking"""
 
     def __init__(self, broker_client, logger: Optional[logging.Logger] = None):
+        self.config = get_config()
         super().__init__(broker_client, logger)
         self.ibkr = broker_client  # Keep self.ibkr for compatibility
 
@@ -107,10 +109,13 @@ class IBKRRebalancer(BaseRebalancer):
             buy_orders = [t for t in buy_result.trades if t.quantity > 0]
             if buy_orders:
                 # Calculate available cash for buys (unified with trade_calculator formula)
-                if snapshot.cash_balance < 100:
+                min_reserve = self.config.trading.minimum_cash_reserve_usd
+                commission_divisor = self.config.trading.commission_divisor
+
+                if snapshot.cash_balance < min_reserve:
                     available_cash = 0
                 else:
-                    available_cash = (snapshot.cash_balance - 100) / 1.01
+                    available_cash = (snapshot.cash_balance - min_reserve) / commission_divisor
 
                 self.logger.info(f"Executing {len(buy_orders)} buy orders with ${available_cash:.2f} available cash")
 
@@ -262,12 +267,15 @@ class IBKRRebalancer(BaseRebalancer):
         except Exception as e:
             self.logger.warning(f"Error cancelling pending orders: {e}")
 
-    async def _wait_for_orders_complete(self, orders: List[Trade], timeout: int = 300):
+    async def _wait_for_orders_complete(self, orders: List[Trade], timeout: Optional[int] = None):
         """Wait for orders to complete or fail"""
         import asyncio
 
         if not orders:
             return
+
+        if timeout is None:
+            timeout = self.config.trading.order_timeout_seconds
 
         # TWS API terminal states (DoneStates)
         TERMINAL_STATES = ['FILLED', 'CANCELLED', 'APICANCELLED', 'INACTIVE']
@@ -298,10 +306,10 @@ class IBKRRebalancer(BaseRebalancer):
                     raise Exception(error_msg)
                 else:
                     self.logger.info("All orders completed successfully")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(self.config.trading.post_completion_delay_seconds)
                     return
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(self.config.trading.order_status_check_interval_seconds)
 
         self.logger.error(f"CRITICAL: Orders timed out after {timeout} seconds")
         raise Exception(f"Order execution timeout after {timeout} seconds")

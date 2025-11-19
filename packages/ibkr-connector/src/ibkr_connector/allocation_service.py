@@ -6,11 +6,13 @@ import aiohttp
 import logging
 from typing import List, Optional
 from broker_connector_base import AllocationItem, AccountConfig
+from app_config import get_config
 
 class AllocationService:
     """Service for fetching target allocations from the API"""
 
     def __init__(self, logger: Optional[logging.Logger] = None):
+        self.config = get_config()
         self.logger = logger or logging.getLogger(__name__)
         self.base_url = os.getenv('ALLOCATIONS_BASE_URL', 'https://fintech.zehnlabs.com/api')
         self.api_key = os.getenv('ALLOCATIONS_API_KEY')
@@ -32,7 +34,7 @@ class AllocationService:
                 async with session.get(
                     allocations_url,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    timeout=aiohttp.ClientTimeout(total=self.config.api.allocation_timeout_seconds)
                 ) as response:
 
                     if response.status != 200:

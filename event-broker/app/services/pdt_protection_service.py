@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+from app_config import get_config
 from app.models import PDTCheckResult, PDTExecutionInfo
 
 
@@ -25,6 +26,7 @@ class PDTProtectionService:
             data_dir: Directory to store execution tracking files
             logger: Optional logger instance
         """
+        self.config = get_config()
         self.data_dir = data_dir
         self.logger = logger or logging.getLogger(__name__)
         self._ensure_directory_exists()
@@ -104,9 +106,11 @@ class PDTProtectionService:
         try:
             now = datetime.now()
 
-            # Calculate next execution: tomorrow at 9:30 AM ET (market open)
+            # Calculate next execution: tomorrow at configured market open time
+            next_time_str = self.config.pdt_protection.next_execution_time
+            next_hour, next_minute = map(int, next_time_str.split(':'))
             next_exec = (now + timedelta(days=1)).replace(
-                hour=9, minute=30, second=0, microsecond=0
+                hour=next_hour, minute=next_minute, second=0, microsecond=0
             )
 
             data = {

@@ -10,6 +10,7 @@ import logging
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from broker_connector_base import AllocationItem
+from app_config import get_config
 
 
 @dataclass
@@ -24,6 +25,7 @@ class ReplacementService:
     """Service for applying ETF replacements with scaling"""
 
     def __init__(self, logger: Optional[logging.Logger] = None):
+        self.config = get_config()
         self.logger = logger or logging.getLogger(__name__)
         self.replacement_sets: Dict[str, List[ReplacementRule]] = {}
         self._load_replacement_sets()
@@ -126,7 +128,7 @@ class ReplacementService:
                 if target_non_replaced_total < 0:
                     self.logger.warning(f"Replacement scaling exceeds available non-replaced allocation. Excess: {total_excess:.3f}, Available: {non_replaced_total:.3f}")
                     # Continue anyway - will result in over-allocation but preserve replacement intent
-                    target_non_replaced_total = 0.1 * non_replaced_total  # Leave minimal allocation
+                    target_non_replaced_total = self.config.replacement.minimal_non_replaced_allocation_percent * non_replaced_total
 
                 scale_factor = target_non_replaced_total / non_replaced_total
 
@@ -168,7 +170,7 @@ class ReplacementService:
         self.logger.debug(f"After consolidation: {len(consolidated_allocations)} unique symbols, total: {final_total:.4f}")
 
         # Normalize to 1.0 (fractions, not percentages)
-        if final_total > 0 and abs(final_total - 1.0) > 0.0001:
+        if final_total > 0 and abs(final_total - 1.0) > self.config.replacement.normalization_trigger_threshold:
             normalization_factor = 1.0 / final_total
             for allocation in consolidated_allocations:
                 allocation['allocation'] *= normalization_factor
@@ -176,7 +178,7 @@ class ReplacementService:
             final_total_after_norm = sum(a['allocation'] for a in consolidated_allocations)
             self.logger.debug(f"Normalized allocations from {final_total:.4f} to {final_total_after_norm:.4f}")
 
-            if abs(final_total_after_norm - 1.0) > 0.01:
+            if abs(final_total_after_norm - 1.0) > self.config.replacement.normalization_failure_threshold:
                 self.logger.warning(f"Final allocation total is {final_total_after_norm:.4f}, not 1.0 - normalization failed")
 
         return [AllocationItem(**alloc) for alloc in consolidated_allocations]

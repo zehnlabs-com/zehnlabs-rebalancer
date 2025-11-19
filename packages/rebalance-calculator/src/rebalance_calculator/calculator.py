@@ -4,6 +4,7 @@ from typing import List, Optional
 import logging
 import math
 from broker_connector_base import AccountSnapshot, ContractPrice, Trade, AllocationItem, AccountConfig
+from app_config import get_config
 from .models import TradeCalculationResult
 
 class TradeCalculator:
@@ -11,6 +12,7 @@ class TradeCalculator:
 
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
+        self.config = get_config()
 
     def calculate_trades(self, snapshot: AccountSnapshot, allocations: List[AllocationItem],
                         market_prices: List[ContractPrice], account_config: AccountConfig,
@@ -121,9 +123,9 @@ class TradeCalculator:
             # For buy: use ask + 0.5% slippage (what you actually pay with limit order)
             # For sell: use bid (what you receive)
             if value_difference > 0:
-                # This will be a buy - use ask price with 0.5% slippage adjustment
+                # This will be a buy - use ask price with slippage adjustment
                 # This ensures we calculate quantities based on the actual limit price we'll use
-                trade_price = price_data.ask * 1.005
+                trade_price = price_data.ask * self.config.trading.buy_slippage_multiplier
             else:
                 # This will be a sell - use bid price (guaranteed valid)
                 trade_price = price_data.bid
@@ -132,14 +134,14 @@ class TradeCalculator:
             exact_shares = value_difference / trade_price
             shares_to_trade = round(exact_shares)
 
-            # Skip orders (buy or sell) if allocation difference is less than 0.5%
+            # Skip orders (buy or sell) if allocation difference is less than threshold
             current_percent = (current_value / total_value * 100) if total_value > 0 else 0
             target_percent_display = target_percent * 100
             allocation_diff = abs(target_percent_display - current_percent)
 
-            if allocation_diff < 0.5:
+            if allocation_diff < self.config.trading.allocation_threshold_percent:
                 action = "sell" if shares_to_trade < 0 else "buy"
-                self.logger.debug(f"Skipping {action} for {symbol}: {allocation_diff:.2f}% difference < 0.5% threshold (target={target_percent_display:.2f}%, current={current_percent:.2f}%)")
+                self.logger.debug(f"Skipping {action} for {symbol}: {allocation_diff:.2f}% difference < {self.config.trading.allocation_threshold_percent}% threshold (target={target_percent_display:.2f}%, current={current_percent:.2f}%)")
                 continue
 
             # Apply phase filter
@@ -204,13 +206,16 @@ class TradeCalculator:
         buy_trades = [t for t in trades if t.quantity > 0]
         total_buy_cost = sum(t.quantity * t.price for t in buy_trades)
 
-        # Slippage is already included in t.price (ask * 1.005 for buys)
-        # Account for 1% commission on all trades and reserve $100 for subscription fees
-        # If cash balance is less than $100, available cash is 0 (can't make any trades)
-        if snapshot.cash_balance < 100:
+        # Slippage is already included in t.price (ask * slippage for buys)
+        # Account for commission on all trades and reserve minimum cash
+        # If cash balance is less than minimum reserve, available cash is 0 (can't make any trades)
+        min_reserve = self.config.trading.minimum_cash_reserve_usd
+        commission_divisor = self.config.trading.commission_divisor
+
+        if snapshot.cash_balance < min_reserve:
             available_cash = 0
         else:
-            available_cash = (snapshot.cash_balance - 100) / 1.01
+            available_cash = (snapshot.cash_balance - min_reserve) / commission_divisor
 
         # Check if any target allocation symbols are missing from the account
         target_symbols = {alloc.symbol for alloc in allocations}
@@ -219,8 +224,9 @@ class TradeCalculator:
 
         # If available cash is 0 and all symbols are present, skip rebalance entirely
         if available_cash <= 0 and not missing_symbols:
+            min_reserve = self.config.trading.minimum_cash_reserve_usd
             self.logger.info(f"  All target symbols already present in account.")
-            self.logger.info(f"  No available cash for optimization (${snapshot.cash_balance:.2f} balance < $100 minimum).")
+            self.logger.info(f"  No available cash for optimization (${snapshot.cash_balance:.2f} balance < ${min_reserve} minimum).")
             self.logger.info(f"  Skipping rebalance - minimum requirements already met.")
             # Return only sell trades (keep liquidations)
             return [t for t in trades if t.quantity <= 0]
@@ -237,10 +243,11 @@ class TradeCalculator:
         total_account_value = snapshot.total_value
 
         # Safety check - don't exceed reasonable limits
-        if total_buy_cost > total_account_value * 0.995:
+        max_utilization = self.config.trading.max_account_utilization
+        if total_buy_cost > total_account_value * max_utilization:
             self.logger.warning(f"  Buy cost ${total_buy_cost:,.2f} exceeds safe limit of account value ${total_account_value:,.2f}")
             # Use account value as the constraint instead of cash balance
-            available_cash = min(available_cash, total_account_value * 0.995)
+            available_cash = min(available_cash, total_account_value * max_utilization)
 
         # Apply scaling logic to fully utilize available cash
 

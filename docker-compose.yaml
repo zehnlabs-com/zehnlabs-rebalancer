@@ -63,6 +63,7 @@ services:
       USER_NOTIFICATIONS_CHANNEL: ${USER_NOTIFICATIONS_CHANNEL}
       TZ: America/New_York
     volumes:
+      - ./config.yaml:/app/config.yaml:ro
       - ./accounts.yaml:/app/accounts.yaml:ro
       - ./replacement-sets.yaml:/app/replacement-sets.yaml:ro
       - ./data:/app/data

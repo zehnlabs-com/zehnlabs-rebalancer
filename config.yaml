@@ -1,0 +1,184 @@
+# ============================================================================
+# Application Configuration
+# ============================================================================
+# Changes to this file require a service restart: docker-compose restart.
+#
+# Configuration is validated at startup using Pydantic models with strict
+# type and range checking. Invalid values will cause service to fail with
+# clear error messages.
+# ============================================================================
+
+# ============================================================================
+# IBKR Connection Settings
+# ============================================================================
+# Controls how the application connects to and interacts with the Interactive
+# Brokers Gateway API. Used by: IBKRClient (packages/ibkr-connector)
+# ============================================================================
+ibkr:
+  # Timeout for individual IBKR API requests (e.g., price data, account info)
+  # Range: 5-60 seconds | Impact: Prevents hung API calls
+  request_timeout_seconds: 10.0
+
+  # Maximum time to wait for initial connection to IBKR Gateway
+  # Range: 5-60 seconds | Impact: Prevents indefinite connection attempts
+  connection_timeout_seconds: 10
+
+  # Wait time after successful connection before making first API request
+  # Range: 0-5 seconds | Impact: Prevents connection drops (empirically determined)
+  connection_stabilization_delay_seconds: 0.5
+
+  # How long to cache price data before refreshing from IBKR API
+  # Range: 10-300 seconds | Impact: Balances price freshness vs API rate limiting
+  price_cache_ttl_seconds: 30
+
+  # Market data type for price quotes
+  # Options: 1=live, 2=frozen, 3=delayed, 4=delayed-frozen
+  # Impact: CRITICAL - Affects real-time quote accuracy
+  market_data_type: 1
+
+  # Dollar amount added to bid price when creating synthetic ask (market closed)
+  # Range: 0.01-10.0 USD | Impact: Affects buy order calculations when market closed
+  synthetic_ask_offset_usd: 1.00
+
+  # Wait time after placing order before checking status
+  # Range: 0.1-5 seconds | Impact: Prevents premature order status checks
+  order_placement_delay_seconds: 1.0
+
+  # Internal container ports for IBKR Gateway connections
+  # These match the Docker container's internal network (not exposed to host)
+  ports:
+    # Port for live trading connections (real money)
+    # Range: 1024-65535 | Impact: CRITICAL - Required for live trading
+    live_internal: 4003
+
+    # Port for paper trading connections (simulation)
+    # Range: 1024-65535 | Impact: CRITICAL - Required for paper trading
+    paper_internal: 4004
+
+# ============================================================================
+# Trading Financial Parameters
+# ============================================================================
+# Constants that control trade calculations, cash management,
+# and order execution parameters. Used by: TradeCalculator, IBKRRebalancer
+# ============================================================================
+trading:
+  # --- Cash Management ---
+
+  # Minimum cash to reserve in account before calculating available funds
+  # Range: 0-1000 USD | Impact: CRITICAL - Prevents negative balance, covers fees
+  # Applied before all trade calculations to ensure liquidity buffer
+  minimum_cash_reserve_usd: 100.0
+
+  # Commission rate as decimal (0.01 = 1%)
+  # Range: 0.0001-0.1 (0.01% to 10%)
+  # Impact: CRITICAL - Converted to divisor (1.01) for cash calculations
+  # Formula: available_cash = (cash_balance - reserve) / (1 + commission_rate)
+  commission_rate: 0.01
+
+  # Maximum percentage of account value that can be used for trading
+  # Range: 0.90-0.999 (90% to 99.9%)
+  # Impact: CRITICAL - Safety limit prevents over-leveraging account
+  max_account_utilization: 0.995
+
+  # --- Order Execution ---
+
+  # Slippage buffer added to ask price for buy orders (as percentage)
+  # Range: 0.1-5.0% | Impact: CRITICAL - Too low = unfilled orders; too high = overpaying
+  # Formula: limit_price = ask_price * (1 + buy_slippage_percent/100)
+  buy_slippage_percent: 0.5
+
+  # Minimum allocation difference (%) to trigger a trade
+  # Range: 0.1-5.0% | Impact: CRITICAL - Controls trading frequency vs precision
+  # Trades skipped if current allocation within this threshold of target
+  allocation_threshold_percent: 0.5
+
+  # Maximum time to wait for order completion (seconds)
+  # Range: 60-600 (1-10 minutes) | Impact: CRITICAL - Too short = premature failure
+  order_timeout_seconds: 300
+
+  # Delay between order status checks in wait loop
+  # Range: 0.5-10 seconds | Impact: Balances responsiveness vs API call frequency
+  order_status_check_interval_seconds: 2.0
+
+  # Wait time after all orders complete before returning
+  # Range: 0-5 seconds | Impact: Ensures IBKR API state is settled (defensive)
+  post_completion_delay_seconds: 1.0
+
+# ============================================================================
+# ETF Replacement Settings
+# ============================================================================
+# Controls replacement of restricted ETFs (e.g., IRA restrictions) with
+# allowed alternatives. Used by: ReplacementService
+# ============================================================================
+replacement:
+  # Threshold to trigger allocation normalization (as decimal)
+  # Range: 0.00001-0.001 | Impact: CRITICAL - Ensures allocations sum to exactly 100%
+  # If total allocation differs from 1.0 by more than this, normalization runs
+  normalization_trigger_threshold: 0.0001
+
+  # Maximum acceptable difference after normalization (as decimal)
+  # Range: 0.001-0.1 (0.1% to 10%) | Impact: CRITICAL - Detects calculation errors
+  # Warning logged if normalization fails to get within this threshold of 100%
+  normalization_failure_threshold: 0.01
+
+  # Fallback minimum allocation for non-replaced ETFs (as decimal)
+  # Range: 0.01-0.5 (1% to 50%) | Impact: CRITICAL - Prevents zeroing out holdings
+  # Used when replacement scaling would exceed available allocation
+  minimal_non_replaced_allocation_percent: 0.1
+
+# ============================================================================
+# PDT Protection (Pattern Day Trader)
+# ============================================================================
+# Prevents accounts from rebalancing multiple times within the same trading day
+# to avoid PDT rule violations. Used by: PDTProtectionService
+# ============================================================================
+pdt_protection:
+  # Next allowed execution time if rebalance blocked by PDT protection
+  # Format: "HH:MM" (24-hour, ET timezone) | Impact: CRITICAL - Controls PDT timing
+  # Typically set to market open (09:30) to allow rebalancing next trading day
+  next_execution_time: "09:30"
+
+# ============================================================================
+# Service Configuration
+# ============================================================================
+# Background service timing and operational settings
+# Used by: Main service loop, manual event watcher
+# ============================================================================
+service:
+  # Main service loop sleep interval (heartbeat)
+  # Range: 0.1-10 seconds | Impact: Service responsiveness, CPU usage
+  heartbeat_interval_seconds: 1.0
+
+  # How often to check for manual rebalance event files
+  # Range: 0.1-10 seconds | Impact: Manual rebalance responsiveness
+  manual_event_check_interval_seconds: 1.0
+
+  # Wait time after error in manual event watcher before retrying
+  # Range: 1-60 seconds | Impact: Prevents rapid error loops
+  error_recovery_delay_seconds: 5.0
+
+  # File path watched for manual rebalance events (JSON files)
+  # Impact: CRITICAL - Core functionality for manual rebalancing via ./tools/rebalance.sh
+  manual_event_file_path: "/app/data/manual-rebalance/rebalance.json"
+
+# ============================================================================
+# Executor Configuration
+# ============================================================================
+# Controls parallel execution of strategy rebalancing across accounts
+# Used by: StrategyExecutor (ProcessPoolExecutor)
+# ============================================================================
+executor:
+  # Maximum number of concurrent strategy executions (process pool workers)
+  # Range: 1-100 | Impact: Controls parallelism vs resource usage (CPU, memory, IBKR connections)
+  max_workers: 32
+
+# ============================================================================
+# API Configuration
+# ============================================================================
+# Settings for external API calls (allocation data, etc.)
+# Used by: AllocationService
+# ============================================================================
+api:
+  # Timeout for HTTP requests to allocation API
+  # Range: 5-120 seconds | Impact: Prevents hung HTTP requests
+  allocation_timeout_seconds: 30

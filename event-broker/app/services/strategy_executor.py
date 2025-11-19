@@ -6,15 +6,17 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ProcessPoolExecutor
+from app_config import get_config
 from .notification_service import NotificationService
 
 class StrategyExecutor:
     """Orchestrates parallel execution of strategy trading"""
 
     def __init__(self, logger: Optional[logging.Logger] = None):
+        self.config = get_config()
         self.logger = logger or logging.getLogger(__name__)
         self.active_strategies = set()  # Simple deduplication
-        self.executor = ProcessPoolExecutor(max_workers=32)
+        self.executor = ProcessPoolExecutor(max_workers=self.config.executor.max_workers)
         self.notification_service = NotificationService(logger=logger)
 
     async def execute_strategy(self, strategy_name: str, accounts: List[dict], event_data: dict):

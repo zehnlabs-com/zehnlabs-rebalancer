@@ -19,26 +19,28 @@ try:
         ContractPrice,
         BrokerConnectionError,
     )
+    from app_config import get_config
     from .models import CachedPrice
 except ImportError as e:
     raise ImportError(
         f"Failed to import required packages: {e}. "
-        "Ensure broker-connector-base package is installed."
+        "Ensure broker-connector-base and app-config packages are installed."
     )
 
 class IBKRClient(BrokerClient):
     """Simplified IBKR client with dedicated connection per account"""
 
     def __init__(self, client_id: int, logger: Optional[logging.Logger] = None):
+        self.config = get_config()
         self.ib = IB()
-        self.ib.RequestTimeout = 10.0
+        self.ib.RequestTimeout = self.config.ibkr.request_timeout_seconds
         self.client_id = client_id
         self.logger = logger or logging.getLogger(__name__)
         self.host = os.getenv('IB_HOST', 'ibkr-gateway')
 
         # Price cache: symbol -> CachedPrice
         self._price_cache: Dict[str, CachedPrice] = {}
-        self._cache_ttl_seconds = 30
+        self._cache_ttl_seconds = self.config.ibkr.price_cache_ttl_seconds
 
         # Automatically determine port based on trading mode
         self.port = self._determine_port()
@@ -66,10 +68,10 @@ class IBKRClient(BrokerClient):
 
         # Automatic port determination based on trading mode
         if trading_mode == 'live':
-            port = 4003  # Live trading port
+            port = self.config.ibkr.ports.live_internal
             self.logger.info(f"Auto-detected port {port} for LIVE trading mode")
         else:
-            port = 4004  # Paper trading port (default)
+            port = self.config.ibkr.ports.paper_internal
             self.logger.info(f"Auto-detected port {port} for PAPER trading mode")
 
         return port
@@ -85,11 +87,11 @@ class IBKRClient(BrokerClient):
                 host=self.host,
                 port=self.port,
                 clientId=self.client_id,
-                timeout=10
+                timeout=self.config.ibkr.connection_timeout_seconds
             )
 
             # Wait a bit for connection to stabilize
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self.config.ibkr.connection_stabilization_delay_seconds)
 
             # Check if still connected
             if not self.ib.isConnected():
@@ -97,7 +99,7 @@ class IBKRClient(BrokerClient):
                 return False
 
             # Set market data type for live data
-            self.ib.reqMarketDataType(1)
+            self.ib.reqMarketDataType(self.config.ibkr.market_data_type)
             self.logger.info("Successfully connected to IBKR Gateway")
             return True
 
@@ -281,9 +283,9 @@ class IBKRClient(BrokerClient):
                 # Handle ask price - use synthetic ask if market is closed (ask=-1 or invalid)
                 ask_price = ticker.ask
                 if ask_price is None or ask_price <= 0 or math.isnan(ask_price):
-                    # Market is closed - synthesize ask price by adding $1 to bid
-                    synthetic_ask = ticker.bid + 1.00
-                    self.logger.warning(f"Market closed for {symbol} (ask={ticker.ask}). Using synthetic ask price: ${synthetic_ask:.2f} (bid + $1)")
+                    # Market is closed - synthesize ask price by adding offset to bid
+                    synthetic_ask = ticker.bid + self.config.ibkr.synthetic_ask_offset_usd
+                    self.logger.warning(f"Market closed for {symbol} (ask={ticker.ask}). Using synthetic ask price: ${synthetic_ask:.2f} (bid + ${self.config.ibkr.synthetic_ask_offset_usd})")
                     ask_price = synthetic_ask
 
                 # Extract valid prices (bid/ask are guaranteed valid at this point)
@@ -386,7 +388,7 @@ class IBKRClient(BrokerClient):
 
             # Place order
             trade = self.ib.placeOrder(contract, order)
-            await asyncio.sleep(1)  # Allow order to be processed
+            await asyncio.sleep(self.config.ibkr.order_placement_delay_seconds)  # Allow order to be processed
 
             order_desc = f"{order.action} {order.totalQuantity} {symbol}"
             if order_type == 'LIMIT':

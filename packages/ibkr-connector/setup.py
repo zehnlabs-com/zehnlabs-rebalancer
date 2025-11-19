@@ -13,6 +13,7 @@ setup(
     install_requires=[
         "broker-connector-base==1.0.0",
         "rebalance-calculator==1.0.0",
+        "app-config==1.0.0",
         "ib-async==2.0.1",
         "pydantic==2.11.7",
         "aiohttp==3.12.15",

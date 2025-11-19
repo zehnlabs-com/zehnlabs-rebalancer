@@ -11,18 +11,20 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # CRITICAL: Copy local packages first
+COPY packages/app-config /tmp/app-config
 COPY packages/broker-connector-base /tmp/broker-connector-base
 COPY packages/rebalance-calculator /tmp/rebalance-calculator
 COPY packages/ibkr-connector /tmp/ibkr-connector
 
-# CRITICAL: Install packages in dependency order
-RUN pip install --no-cache-dir /tmp/broker-connector-base && \
+# CRITICAL: Install packages in dependency order (app-config first, then broker-base, then others)
+RUN pip install --no-cache-dir /tmp/app-config && \
+    pip install --no-cache-dir /tmp/broker-connector-base && \
     pip install --no-cache-dir /tmp/rebalance-calculator && \
     pip install --no-cache-dir /tmp/ibkr-connector && \
-    rm -rf /tmp/broker-connector-base /tmp/rebalance-calculator /tmp/ibkr-connector
+    rm -rf /tmp/app-config /tmp/broker-connector-base /tmp/rebalance-calculator /tmp/ibkr-connector
 
 # Verify package installation
-RUN pip list | grep -E "(broker|rebalance|ibkr)"
+RUN pip list | grep -E "(app-config|broker|rebalance|ibkr)"
 
 # Copy requirements first for better caching
 COPY event-broker/requirements.txt .
