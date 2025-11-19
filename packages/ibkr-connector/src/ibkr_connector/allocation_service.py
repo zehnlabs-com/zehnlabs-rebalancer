@@ -5,7 +5,7 @@ import json
 import aiohttp
 import logging
 from typing import List, Optional
-from app.models import AllocationItem, AccountConfig
+from broker_connector_base import AllocationItem, AccountConfig
 
 class AllocationService:
     """Service for fetching target allocations from the API"""

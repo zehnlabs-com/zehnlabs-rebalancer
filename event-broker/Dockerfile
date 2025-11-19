@@ -10,6 +10,20 @@ RUN apt-get update && apt-get install -y \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+# CRITICAL: Copy local packages first
+COPY packages/broker-connector-base /tmp/broker-connector-base
+COPY packages/rebalance-calculator /tmp/rebalance-calculator
+COPY packages/ibkr-connector /tmp/ibkr-connector
+
+# CRITICAL: Install packages in dependency order
+RUN pip install --no-cache-dir /tmp/broker-connector-base && \
+    pip install --no-cache-dir /tmp/rebalance-calculator && \
+    pip install --no-cache-dir /tmp/ibkr-connector && \
+    rm -rf /tmp/broker-connector-base /tmp/rebalance-calculator /tmp/ibkr-connector
+
+# Verify package installation
+RUN pip list | grep -E "(broker|rebalance|ibkr)"
+
 # Copy requirements first for better caching
 COPY event-broker/requirements.txt .
 

@@ -107,11 +107,13 @@ async def process_single_account(account: dict, client_id: int, event_data: dict
 
         manager = SubprocessManager()
 
-        async with manager.managed_ibkr_client(account_id, client_id, logger) as ibkr:
-            sys.path.append('/app')
-            from app.trading.rebalancer import Rebalancer
-
-            rebalancer = Rebalancer(ibkr, logger=logger)
+        async with manager.managed_broker_client(account_config, client_id, logger) as broker_client:
+            # Create rebalancer based on broker type
+            if account_config.broker.lower() == 'ibkr':
+                from ibkr_connector import IBKRRebalancer
+                rebalancer = IBKRRebalancer(broker_client, logger=logger)
+            else:
+                raise ValueError(f"Unsupported broker: {account_config.broker}")
 
             if event_data.get('exec') == 'rebalance':
                 logger.info("Executing LIVE rebalance")
@@ -208,42 +210,48 @@ class SubprocessManager:
         signal.signal(signal.SIGINT, self._signal_handler)
 
     @asynccontextmanager
-    async def managed_ibkr_client(self, account_id: str, client_id: int, logger):
-        """Context manager for IBKR client with guaranteed cleanup"""
+    async def managed_broker_client(self, account_config: AccountConfig, client_id: int, logger):
+        """Context manager for broker client with guaranteed cleanup"""
 
-        ibkr = None
+        broker_client = None
+        account_id = account_config.account_id
+
         try:
-            sys.path.append('/app')  # Ensure we can import our modules
-            from app.trading.ibkr_client import IBKRClient
+            sys.path.append('/app')  # Only for app.* imports
+            from app.trading.broker_factory import create_broker_client
 
-            logger.info(f"Creating IBKR client with ID {client_id}")
-            ibkr = IBKRClient(client_id=client_id, logger=logger)
+            logger.info(f"Creating broker client with ID {client_id}")
+            broker_client = create_broker_client(
+                account_config=account_config,
+                client_id=client_id,
+                logger=logger
+            )
 
             # Track active connection
-            self.active_connections[account_id] = ibkr
+            self.active_connections[account_id] = broker_client
 
             # Connect
-            logger.info("Establishing IBKR connection")
-            connected = await ibkr.connect()
+            logger.info("Establishing broker connection")
+            connected = await broker_client.connect()
 
             if not connected:
-                raise ConnectionError("Failed to connect to IBKR Gateway")
+                raise ConnectionError(f"Failed to connect to {account_config.broker.upper()} broker")
 
-            logger.info("IBKR connection established successfully")
-            yield ibkr
+            logger.info("Broker connection established successfully")
+            yield broker_client
 
         except Exception as e:
-            logger.error(f"IBKR client error: {e}")
+            logger.error(f"Broker client error: {e}")
             raise
 
         finally:
             # Guaranteed cleanup
-            if ibkr:
+            if broker_client:
                 try:
-                    if ibkr.is_connected():
-                        logger.info("Cleaning up IBKR connection")
-                        await ibkr.disconnect()
-                        logger.info("IBKR connection closed successfully")
+                    if broker_client.is_connected():
+                        logger.info("Cleaning up broker connection")
+                        await broker_client.disconnect()
+                        logger.info("Broker connection closed successfully")
                 except Exception as e:
                     logger.error(f"Error during cleanup: {e}")
                 finally:
@@ -252,11 +260,13 @@ class SubprocessManager:
 
     def _cleanup_all(self):
         """Emergency cleanup of all connections"""
-        for account_id, ibkr in self.active_connections.items():
+        for account_id, broker_client in self.active_connections.items():
             try:
-                if ibkr.is_connected():
+                if broker_client.is_connected():
                     # Synchronous disconnect for emergency cleanup
-                    ibkr.ib.disconnect()
+                    # For IBKR clients, access the underlying ib object
+                    if hasattr(broker_client, 'ib'):
+                        broker_client.ib.disconnect()
                     print(f"Emergency cleanup: Disconnected {account_id}")
             except Exception as e:
                 print(f"Emergency cleanup failed for {account_id}: {e}")

@@ -3,20 +3,37 @@
 from typing import List, Optional
 from datetime import datetime
 import logging
-from app.models import AccountConfig, AccountSnapshot, AllocationItem, Trade, RebalanceResult, CalculateRebalanceResult
 
-class Rebalancer:
+try:
+    from broker_connector_base import (
+        BaseRebalancer,
+        AccountSnapshot,
+        RebalanceResult,
+        CalculateRebalanceResult,
+        Trade,
+        AllocationItem,
+        AccountConfig,
+    )
+    from rebalance_calculator import TradeCalculator
+    from .allocation_service import AllocationService
+    from .replacement_service import ReplacementService
+except ImportError as e:
+    raise ImportError(
+        f"Failed to import required packages: {e}. "
+        "Ensure packages are installed."
+    )
+
+
+class IBKRRebalancer(BaseRebalancer):
     """Simplified rebalancer without account locking"""
 
-    def __init__(self, ibkr_client, logger: Optional[logging.Logger] = None):
-        self.ibkr = ibkr_client
-        self.logger = logger or logging.getLogger(__name__)
+    def __init__(self, broker_client, logger: Optional[logging.Logger] = None):
+        super().__init__(broker_client, logger)
+        self.ibkr = broker_client  # Keep self.ibkr for compatibility
 
     async def rebalance_account(self, account: AccountConfig) -> RebalanceResult:
         """Execute rebalancing for account"""
-        from .allocation_service import AllocationService
-        from .replacement_service import ReplacementService
-        from .trade_calculator import TradeCalculator
+        # Imports already at top of file
 
         account_id = account.account_id
         self.logger.info(f"Starting rebalance for account {account_id}")
@@ -193,9 +210,7 @@ class Rebalancer:
 
     async def calculate_rebalance(self, account: AccountConfig) -> CalculateRebalanceResult:
         """Calculate rebalance without executing (print-rebalance)"""
-        from .allocation_service import AllocationService
-        from .replacement_service import ReplacementService
-        from .trade_calculator import TradeCalculator
+        # Imports already at top of file
 
         account_id = account.account_id
         self.logger.info(f"Calculating rebalance for account {account_id}")

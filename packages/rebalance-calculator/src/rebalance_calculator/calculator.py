@@ -3,7 +3,8 @@
 from typing import List, Optional
 import logging
 import math
-from app.models import AccountSnapshot, AllocationItem, AccountConfig, Trade, ContractPrice, TradeCalculationResult
+from broker_connector_base import AccountSnapshot, ContractPrice, Trade, AllocationItem, AccountConfig
+from .models import TradeCalculationResult
 
 class TradeCalculator:
     """Calculate trades needed for rebalancing"""

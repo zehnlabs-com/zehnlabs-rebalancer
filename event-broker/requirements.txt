@@ -1,6 +1,8 @@
+# Local packages (broker-connector-base, rebalance-calculator, ibkr-connector)
+# are installed via Dockerfile. Only list event-broker-specific dependencies here.
+
 ably==2.0.12
-PyYAML==6.0.2
-pydantic==2.11.7
-aiohttp==3.12.15
-ib-async==2.0.1
 tzdata==2025.2
+
+# NOTE: pydantic, aiohttp, PyYAML, ib-async are installed via ibkr-connector
+# Do NOT list them here to avoid version conflicts

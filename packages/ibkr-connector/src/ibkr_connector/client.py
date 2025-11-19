@@ -7,9 +7,26 @@ import math
 from typing import List, Optional, Dict
 from datetime import datetime
 from ib_async import IB, Stock, MarketOrder, LimitOrder, Contract
-from app.models import AccountSnapshot, AccountPosition, OrderResult, OpenOrder, ContractPrice, CachedPrice
 
-class IBKRClient:
+try:
+    import broker_connector_base
+    from broker_connector_base import (
+        BrokerClient,
+        AccountSnapshot,
+        AccountPosition,
+        OrderResult,
+        OpenOrder,
+        ContractPrice,
+        BrokerConnectionError,
+    )
+    from .models import CachedPrice
+except ImportError as e:
+    raise ImportError(
+        f"Failed to import required packages: {e}. "
+        "Ensure broker-connector-base package is installed."
+    )
+
+class IBKRClient(BrokerClient):
     """Simplified IBKR client with dedicated connection per account"""
 
     def __init__(self, client_id: int, logger: Optional[logging.Logger] = None):
@@ -25,6 +42,11 @@ class IBKRClient:
 
         # Automatically determine port based on trading mode
         self.port = self._determine_port()
+
+        # Log package version
+        self.logger.info(
+            f"Initializing IBKRClient with broker-connector-base v{broker_connector_base.__version__}"
+        )
 
     def _determine_port(self) -> int:
         """Determine the correct IBKR Gateway port based on trading mode"""
@@ -250,13 +272,19 @@ class IBKRClient:
             for ticker in tickers:
                 symbol = ticker.contract.symbol
 
-                # Validate that BOTH bid and ask are available - required for trading
-                # Check for all invalid cases: None, -1, 0, negative, or NaN
-                if (ticker.bid is None or ticker.bid <= 0 or math.isnan(ticker.bid) or
-                    ticker.ask is None or ticker.ask <= 0 or math.isnan(ticker.ask)):
+                # Validate bid price - always required
+                if ticker.bid is None or ticker.bid <= 0 or math.isnan(ticker.bid):
                     failed_symbols.append(symbol)
-                    self.logger.error(f"Missing bid/ask prices for {symbol} (bid={ticker.bid}, ask={ticker.ask}). Cannot execute trades without valid market quotes.")
+                    self.logger.error(f"Missing bid price for {symbol} (bid={ticker.bid}). Cannot execute trades without valid bid price.")
                     continue
+
+                # Handle ask price - use synthetic ask if market is closed (ask=-1 or invalid)
+                ask_price = ticker.ask
+                if ask_price is None or ask_price <= 0 or math.isnan(ask_price):
+                    # Market is closed - synthesize ask price by adding $1 to bid
+                    synthetic_ask = ticker.bid + 1.00
+                    self.logger.warning(f"Market closed for {symbol} (ask={ticker.ask}). Using synthetic ask price: ${synthetic_ask:.2f} (bid + $1)")
+                    ask_price = synthetic_ask
 
                 # Extract valid prices (bid/ask are guaranteed valid at this point)
                 # For last/close, default to 0.0 if invalid (these are optional for display purposes)
@@ -267,7 +295,7 @@ class IBKRClient:
                 contract_price = ContractPrice(
                     symbol=symbol,
                     bid=ticker.bid,
-                    ask=ticker.ask,
+                    ask=ask_price,  # Use synthetic ask if market is closed
                     last=last,
                     close=close
                 )
@@ -294,7 +322,7 @@ class IBKRClient:
 
         except Exception as e:
             self.logger.error(f"Batch price request failed: {e}")
-            raise ValueError(f"Batch pricing system failure. This indicates a serious system issue that must be resolved.")
+            raise ValueError(f"Batch pricing system failure. This could be a serious system issue that may require manual resolution.")
 
     async def _get_single_market_price(self, symbol: str) -> float:
         """Get market price for a single symbol with exchange fallback"""
@@ -366,7 +394,7 @@ class IBKRClient:
             self.logger.info(f"Placed order: {order_desc}")
 
             return OrderResult(
-                order_id=trade.order.orderId,
+                order_id=str(trade.order.orderId),  # Convert int to string
                 symbol=symbol,
                 quantity=quantity,
                 status=trade.orderStatus.status
@@ -386,7 +414,7 @@ class IBKRClient:
                 if (trade.order.account == account_id and
                     trade.orderStatus.status not in ['Filled', 'Cancelled']):
                     open_orders.append(OpenOrder(
-                        order_id=trade.order.orderId,
+                        order_id=str(trade.order.orderId),  # Convert int to string
                         symbol=trade.contract.symbol,
                         quantity=trade.order.totalQuantity,
                         status=trade.orderStatus.status,
@@ -399,12 +427,18 @@ class IBKRClient:
             self.logger.error(f"Failed to get open orders: {e}")
             return []
 
-    async def cancel_order(self, order_id: int):
-        """Cancel an order"""
+    async def cancel_order(self, order_id: str):
+        """Cancel an order (order_id is string to support both int and UUID)"""
         try:
+            # Convert string to int for IBKR API
+            try:
+                order_id_int = int(order_id)
+            except ValueError:
+                raise ValueError(f"Order ID must be numeric for IBKR, got: {order_id}")
+
             trades = self.ib.trades()
             for trade in trades:
-                if trade.order.orderId == order_id:
+                if trade.order.orderId == order_id_int:
                     self.ib.cancelOrder(trade.order)
                     self.logger.info(f"Cancelled order {order_id}")
                     return
@@ -414,12 +448,19 @@ class IBKRClient:
         except Exception as e:
             self.logger.error(f"Failed to cancel order {order_id}: {e}")
 
-    async def get_order_status(self, order_id: int) -> str:
-        """Get status of an order"""
+    async def get_order_status(self, order_id: str) -> str:
+        """Get status of an order (order_id is string)"""
         try:
+            # Convert string to int for IBKR API
+            try:
+                order_id_int = int(order_id)
+            except ValueError:
+                self.logger.error(f"Invalid order ID format: {order_id}")
+                return 'ERROR'
+
             trades = self.ib.trades()
             for trade in trades:
-                if trade.order.orderId == order_id:
+                if trade.order.orderId == order_id_int:
                     return trade.orderStatus.status
             return 'NOT_FOUND'
 
