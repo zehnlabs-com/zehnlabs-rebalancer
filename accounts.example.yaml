@@ -22,7 +22,10 @@ accounts:
     strategy_name: etf-blend-200-35
     # Percentage of equity to reserve as a buffer for quickly changing prices.
     # Valid values are 0% to 100%, default 0%
-    cash_reserve_percent: 1.0
+    cash_reserve_percent: 0.0
+    # Enable PDT protection to avoid pattern day trader restrictions.
+    # If enabled, the system will rebalance "at most" once a day.
+    pdt_protection_enabled: true
 
   # Account 2  
   ############
@@ -41,5 +44,8 @@ accounts:
     strategy_name: etf-blend-301-20 # Strategy name, all lowercase, spaces replaced with hyphens
     # Percentage of equity to reserve as a buffer for quickly changing prices.
     # Valid values are 0% to 100%, default 0%
-    cash_reserve_percent: 1.0
+    cash_reserve_percent: 0.0
+    # Enable PDT protection to avoid pattern day trader restrictions.
+    # If enabled, the system will rebalance "at most" once a day.    
+    pdt_protection_enabled: true
 
