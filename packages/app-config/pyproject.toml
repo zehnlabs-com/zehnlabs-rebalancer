@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "app-config"
 version = "1.0.0"
-description = "Application configuration management for IBKR Portfolio Rebalancer"
+description = "Application configuration management for Zehnlabs Rebalancer"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0.0",

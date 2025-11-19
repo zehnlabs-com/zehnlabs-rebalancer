@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="broker-connector-base",
     version="1.0.0",
-    author="IBKR Portfolio Rebalancer Team",
+    author="Zehnlabs Rebalancer Team",
     description="Abstract base classes for broker connectors",
     package_dir={"": "src"},
     packages=find_packages(where="src"),

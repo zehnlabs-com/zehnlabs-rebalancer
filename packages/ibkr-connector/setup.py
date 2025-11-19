@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="ibkr-connector",
     version="1.0.0",
-    author="IBKR Portfolio Rebalancer Team",
+    author="Zehnlabs Rebalancer Team",
     description="Interactive Brokers connector implementation",
     package_dir={"": "src"},
     packages=find_packages(where="src"),

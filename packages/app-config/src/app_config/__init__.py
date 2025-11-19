@@ -1,4 +1,4 @@
-"""Application configuration management for IBKR Portfolio Rebalancer."""
+"""Application configuration management for Zehnlabs Rebalancer."""
 
 from .models import (
     AppConfig,
