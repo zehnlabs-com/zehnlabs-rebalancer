@@ -21,14 +21,10 @@ class TradeCalculator:
         Calculate required trades based on target allocations.
         Returns TradeCalculationResult containing trades and warnings
         """
-
         trades = []
         warnings = []
         total_value = snapshot.total_value
         cash_reserve = account_config.cash_reserve_percent / 100.0
-
-        # Always calculate target values based on total account value
-        # Cash constraints are handled in the scaling phase
         available_value = total_value * (1 - cash_reserve)
 
         if phase == 'buy':
@@ -37,58 +33,97 @@ class TradeCalculator:
         position_map = {pos.symbol: pos for pos in snapshot.positions}
         price_map = {mp.symbol: mp for mp in market_prices}
 
-        # Track total value allocated
-        total_allocated_value = 0
-        total_value_left_on_table = 0
+        # Calculate liquidation trades for positions not in target allocations
+        liquidation_trades = self._calculate_liquidation_trades(
+            snapshot=snapshot,
+            allocations=allocations,
+            price_map=price_map,
+            phase=phase,
+            warnings=warnings
+        )
+        trades.extend(liquidation_trades)
 
+        # Calculate rebalancing trades for target allocations
+        rebalance_trades = self._calculate_rebalance_trades(
+            allocations=allocations,
+            available_value=available_value,
+            total_value=total_value,
+            position_map=position_map,
+            price_map=price_map,
+            phase=phase
+        )
+        trades.extend(rebalance_trades)
+
+        # Sort and scale trades
+        trades = self._sort_trades_by_priority(trades, allocations)
+
+        if phase in ['buy', 'all']:
+            trades = self._apply_cash_constraint_scaling(
+                trades=trades,
+                snapshot=snapshot,
+                allocations=allocations,
+                phase=phase
+            )
+
+        return TradeCalculationResult(trades=trades, warnings=warnings)
+
+    def _calculate_liquidation_trades(self, snapshot: AccountSnapshot, allocations: List[AllocationItem],
+                                     price_map: dict, phase: str, warnings: List[str]) -> List[Trade]:
+        """Calculate trades to liquidate positions not in target allocations"""
+        trades = []
         target_symbols = {alloc.symbol for alloc in allocations}
-        for symbol, position in position_map.items():
-            if symbol not in target_symbols:
+
+        for position in snapshot.positions:
+            if position.symbol not in target_symbols and position.quantity > 0:
+                price_data = price_map.get(position.symbol)
+
+                # Validate price data
+                if not price_data:
+                    self.logger.error(f"No price data for {position.symbol} to liquidate")
+                    raise ValueError(f"No price data for {position.symbol}. Cannot liquidate position without valid price.")
+
+                if not price_data.bid or price_data.bid <= 0 or math.isnan(price_data.bid):
+                    self.logger.error(f"Invalid bid price for {position.symbol}: {price_data.bid}")
+                    raise ValueError(f"Invalid bid price for {position.symbol}: {price_data.bid}. Cannot liquidate position.")
+
+                current_price = price_data.bid
                 current_shares = position.quantity
-                if current_shares > 0:
-                    price_data = price_map.get(symbol)
 
-                    # Validate price data exists
-                    if not price_data:
-                        self.logger.error(f"No price data for {symbol} to liquidate - rebalance cannot proceed")
-                        raise ValueError(f"No price data for {symbol}. Cannot liquidate position without valid price.")
+                # Handle fractional positions
+                if 0 < current_shares < 1:
+                    if phase != 'buy':  # Only warn during first phase
+                        market_value = current_shares * current_price
+                        warning_message = (
+                            f"Position {position.symbol} ({current_shares:.4f} shares, ${market_value:.2f}) "
+                            f"cannot be liquidated via API.\n\n"
+                            f"IBKR API does not support liquidating fractional positions programmatically.\n\n"
+                            f"Please close this position manually using TWS desktop or IBKR Mobile app."
+                        )
+                        warnings.append(warning_message)
+                        self.logger.warning(
+                            f"Cannot liquidate fractional position via API: "
+                            f"{position.symbol} ({current_shares:.4f} shares). Manual intervention required."
+                        )
+                    continue
 
-                    # Validate bid price is valid (get_multiple_market_prices already validated this)
-                    if not price_data.bid or price_data.bid <= 0 or math.isnan(price_data.bid):
-                        self.logger.error(f"Invalid bid price for {symbol}: {price_data.bid} - cannot liquidate")
-                        raise ValueError(f"Invalid bid price for {symbol}: {price_data.bid}. Cannot liquidate position.")
+                self.logger.info(f"Liquidating: {position.symbol} ({current_shares:,} shares @ ${current_price:.2f})")
+                trades.append(Trade(
+                    symbol=position.symbol,
+                    quantity=int(-current_shares),
+                    current_shares=current_shares,
+                    target_value=0,
+                    current_value=current_shares * current_price,
+                    price=current_price,
+                    order_type='MARKET'
+                ))
 
-                    # For sells, use bid price (what you receive)
-                    current_price = price_data.bid
+        return trades
 
-                    # Check if fractional position that cannot be liquidated via API
-                    if 0 < current_shares < 1:
-                        # Only warn during first phase (not during buy-only recalculation)
-                        if phase != 'buy':
-                            market_value = current_shares * current_price
-                            warning_message = (
-                                f"Position {symbol} ({current_shares:.4f} shares, ${market_value:.2f}) "
-                                f"cannot be liquidated via API.\n\n"
-                                f"IBKR API does not support liquidating fractional positions programmatically.\n\n"
-                                f"Please close this position manually using TWS desktop or IBKR Mobile app."
-                            )
-                            warnings.append(warning_message)
-                            self.logger.warning(
-                                f"Cannot liquidate fractional position via API: "
-                                f"{symbol} ({current_shares:.4f} shares). Manual intervention required."
-                            )
-                        continue  # Skip - cannot liquidate via API
-
-                    self.logger.info(f"Liquidating: {symbol} ({current_shares:,} shares @ ${current_price:.2f})")
-                    trades.append(Trade(
-                        symbol=symbol,
-                        quantity=int(-current_shares),
-                        current_shares=current_shares,
-                        target_value=0,
-                        current_value=current_shares * current_price,
-                        price=current_price,
-                        order_type='MARKET'
-                    ))
+    def _calculate_rebalance_trades(self, allocations: List[AllocationItem], available_value: float,
+                                   total_value: float, position_map: dict, price_map: dict,
+                                   phase: str) -> List[Trade]:
+        """Calculate trades to rebalance to target allocations"""
+        trades = []
 
         for allocation in allocations:
             symbol = allocation.symbol
@@ -99,49 +134,33 @@ class TradeCalculator:
             current_shares = current_position.quantity if current_position else 0
             price_data = price_map.get(symbol)
 
+            # Validate price data
             if not price_data:
-                self.logger.error(f"No price data for {symbol} - rebalance cannot proceed")
+                self.logger.error(f"No price data for {symbol}")
                 raise ValueError(f"No price data for {symbol}. Rebalance aborted.")
 
-            # Validate that we have valid bid and ask prices
-            # The ibkr_client should have already validated this, but we double-check
             if not price_data.bid or price_data.bid <= 0 or math.isnan(price_data.bid):
-                self.logger.error(f"Invalid bid price for {symbol}: {price_data.bid} - rebalance cannot proceed")
+                self.logger.error(f"Invalid bid price for {symbol}: {price_data.bid}")
                 raise ValueError(f"Invalid bid price for {symbol}: {price_data.bid}. Rebalance aborted.")
 
             if not price_data.ask or price_data.ask <= 0 or math.isnan(price_data.ask):
-                self.logger.error(f"Invalid ask price for {symbol}: {price_data.ask} - rebalance cannot proceed")
+                self.logger.error(f"Invalid ask price for {symbol}: {price_data.ask}")
                 raise ValueError(f"Invalid ask price for {symbol}: {price_data.ask}. Rebalance aborted.")
 
-            # Use midpoint for current value calculation (bid and ask are guaranteed valid)
+            # Calculate current value and trade requirements
             current_price = (price_data.bid + price_data.ask) / 2
-
             current_value = current_shares * current_price
             value_difference = target_value - current_value
 
-            # Determine if this will be a buy or sell, and use appropriate price
-            # For buy: use ask + 0.5% slippage (what you actually pay with limit order)
-            # For sell: use bid (what you receive)
-            if value_difference > 0:
-                # This will be a buy - use ask price with slippage adjustment
-                # This ensures we calculate quantities based on the actual limit price we'll use
-                trade_price = price_data.ask * self.config.trading.buy_slippage_multiplier
-            else:
-                # This will be a sell - use bid price (guaranteed valid)
-                trade_price = price_data.bid
+            # Determine trade price based on buy/sell direction
+            trade_price = self._get_trade_price(price_data, value_difference)
 
-            # Calculate shares to trade using the appropriate price
+            # Calculate shares to trade
             exact_shares = value_difference / trade_price
             shares_to_trade = round(exact_shares)
 
-            # Skip orders (buy or sell) if allocation difference is less than threshold
-            current_percent = (current_value / total_value * 100) if total_value > 0 else 0
-            target_percent_display = target_percent * 100
-            allocation_diff = abs(target_percent_display - current_percent)
-
-            if allocation_diff < self.config.trading.allocation_threshold_percent:
-                action = "sell" if shares_to_trade < 0 else "buy"
-                self.logger.debug(f"Skipping {action} for {symbol}: {allocation_diff:.2f}% difference < {self.config.trading.allocation_threshold_percent}% threshold (target={target_percent_display:.2f}%, current={current_percent:.2f}%)")
+            # Check if trade meets threshold
+            if not self._meets_allocation_threshold(current_value, total_value, target_percent, shares_to_trade, symbol):
                 continue
 
             # Apply phase filter
@@ -151,17 +170,7 @@ class TradeCalculator:
                 continue
 
             if shares_to_trade != 0:
-                trade_value = shares_to_trade * trade_price
-                total_allocated_value += abs(trade_value)
-                total_value_left_on_table += abs((exact_shares - shares_to_trade) * trade_price)
-
-                # For buys, use LIMIT orders with 0.5% slippage protection
-                # For sells, use MARKET orders (already getting bid price)
-                if shares_to_trade > 0:
-                    order_type = 'LIMIT'
-                else:
-                    order_type = 'MARKET'
-
+                order_type = 'LIMIT' if shares_to_trade > 0 else 'MARKET'
                 trades.append(Trade(
                     symbol=symbol,
                     quantity=shares_to_trade,
@@ -172,32 +181,47 @@ class TradeCalculator:
                     order_type=order_type
                 ))
 
+        return trades
 
-        # Sort trades by priority: sells first, then buys by allocation % (highest first)
-        # Build allocation map for priority sorting
+    def _get_trade_price(self, price_data: ContractPrice, value_difference: float) -> float:
+        """Determine appropriate trade price based on buy/sell direction"""
+        if value_difference > 0:
+            # Buy: use ask price with slippage adjustment
+            return price_data.ask * self.config.trading.buy_slippage_multiplier
+        else:
+            # Sell: use bid price
+            return price_data.bid
+
+    def _meets_allocation_threshold(self, current_value: float, total_value: float, 
+                                   target_percent: float, shares_to_trade: int, symbol: str) -> bool:
+        """Check if allocation difference meets minimum threshold"""
+        current_percent = (current_value / total_value * 100) if total_value > 0 else 0
+        target_percent_display = target_percent * 100
+        allocation_diff = abs(target_percent_display - current_percent)
+
+        if allocation_diff < self.config.trading.allocation_threshold_percent:
+            action = "sell" if shares_to_trade < 0 else "buy"
+            self.logger.debug(
+                f"Skipping {action} for {symbol}: {allocation_diff:.2f}% difference < "
+                f"{self.config.trading.allocation_threshold_percent}% threshold "
+                f"(target={target_percent_display:.2f}%, current={current_percent:.2f}%)"
+            )
+            return False
+        return True
+
+    def _sort_trades_by_priority(self, trades: List[Trade], allocations: List[AllocationItem]) -> List[Trade]:
+        """Sort trades by priority: sells first, then buys by allocation %"""
         allocation_map = {alloc.symbol: alloc.allocation for alloc in allocations}
 
         def sort_key(trade):
             if trade.quantity < 0:
-                # Sells: sort by quantity (most negative first)
-                return (0, trade.quantity)
+                return (0, trade.quantity)  # Sells: by quantity (most negative first)
             else:
-                # Buys: sort by allocation priority (highest % first)
                 allocation_pct = allocation_map.get(trade.symbol, 0)
-                return (1, -allocation_pct)  # Negative to sort descending
+                return (1, -allocation_pct)  # Buys: by allocation (highest first)
 
         trades.sort(key=sort_key)
-
-        # Apply cash constraint scaling for buy phase
-        if phase in ['buy', 'all']:
-            trades = self._apply_cash_constraint_scaling(
-                trades=trades,
-                snapshot=snapshot,
-                allocations=allocations,
-                phase=phase
-            )
-
-        return TradeCalculationResult(trades=trades, warnings=warnings)
+        return trades
 
     def _apply_cash_constraint_scaling(self, trades: List[Trade], snapshot: AccountSnapshot,
                                         allocations: List[AllocationItem], phase: str) -> List[Trade]:

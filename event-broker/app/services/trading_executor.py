@@ -84,87 +84,109 @@ async def process_strategy_accounts(strategy_name: str, accounts: List[dict], ev
 
 async def process_single_account(account: dict, client_id: int, event_data: dict):
     """Process a single account with dedicated IBKR client"""
-
     account_config = AccountConfig(**account)
     account_id = account_config.account_id
     strategy_name = account_config.strategy_name
 
     async with account_logger_context(account_id, strategy_name) as logger:
-        from app.services.pdt_protection_service import PDTProtectionService
-        pdt_service = PDTProtectionService(logger=logger)
+        # Check PDT protection before execution
+        await _check_pdt_protection(account_config, event_data, logger)
 
-        # PDT Protection Pre-Check: Verify execution is allowed
-        if account_config.pdt_protection_enabled and event_data.get('exec') == 'rebalance':
-            check_result = pdt_service.is_execution_allowed(account_id)
-
-            if not check_result.allowed:
-                error_msg = (
-                    f"PDT Protection: Account {account_id} was already rebalanced earlier today "
-                    f"so it was skipped to protect against PDT. "
-                    f"You can manually rebalance after {check_result.next_allowed_time}."
-                )
-                logger.warning(error_msg)
-                raise Exception(error_msg)
-
+        # Execute trading operation
         manager = SubprocessManager()
-
         async with manager.managed_broker_client(account_config, client_id, logger) as broker_client:
-            # Create rebalancer based on broker type
-            if account_config.broker.lower() == 'ibkr':
-                from ibkr_connector import IBKRRebalancer
-                rebalancer = IBKRRebalancer(broker_client, logger=logger)
+            rebalancer = _create_rebalancer(account_config, broker_client, logger)
+            
+            exec_command = event_data.get('exec')
+            if exec_command == 'rebalance':
+                return await _execute_live_rebalance(rebalancer, account_config, logger)
+            elif exec_command == 'print-rebalance':
+                return await _execute_preview_rebalance(rebalancer, account_config, logger)
             else:
-                raise ValueError(f"Unsupported broker: {account_config.broker}")
+                raise ValueError(f"Unknown command: {exec_command}")
 
-            if event_data.get('exec') == 'rebalance':
-                logger.info("Executing LIVE rebalance")
-                result = await rebalancer.rebalance_account(account_config)
+async def _check_pdt_protection(account_config: AccountConfig, event_data: dict, logger):
+    """Check PDT protection rules before execution"""
+    from app.services.pdt_protection_service import PDTProtectionService
+    
+    if not account_config.pdt_protection_enabled or event_data.get('exec') != 'rebalance':
+        return
 
-                if not result.success:
-                    logger.error(f"Rebalance failed: {result.error}")
-                    raise Exception(f"Rebalance failed: {result.error}")
+    pdt_service = PDTProtectionService(logger=logger)
+    check_result = pdt_service.is_execution_allowed(account_config.account_id)
 
-                logger.info(f"Rebalance completed: {len(result.orders)} trades executed")
+    if not check_result.allowed:
+        error_msg = (
+            f"PDT Protection: Account {account_config.account_id} was already rebalanced earlier today "
+            f"so it was skipped to protect against PDT. "
+            f"You can manually rebalance after {check_result.next_allowed_time}."
+        )
+        logger.warning(error_msg)
+        raise Exception(error_msg)
 
-                # PDT Protection Post-Success: Record execution timestamp for all live rebalances
-                pdt_service.record_execution(account_id)
+def _create_rebalancer(account_config: AccountConfig, broker_client, logger):
+    """Create appropriate rebalancer based on broker type"""
+    if account_config.broker.lower() == 'ibkr':
+        from ibkr_connector import IBKRRebalancer
+        return IBKRRebalancer(broker_client, logger=logger)
+    else:
+        raise ValueError(f"Unsupported broker: {account_config.broker}")
 
-                return {
-                    'success': True,
-                    'action': 'rebalance',
-                    'trades_executed': len(result.orders),
-                    'total_value': result.total_value,
-                    'cash_balance': result.cash_balance,
-                    'warnings': result.warnings
-                }
+async def _execute_live_rebalance(rebalancer, account_config: AccountConfig, logger) -> dict:
+    """Execute live rebalance with real trades"""
+    from app.services.pdt_protection_service import PDTProtectionService
+    
+    logger.info("Executing LIVE rebalance")
+    result = await rebalancer.rebalance_account(account_config)
 
-            elif event_data.get('exec') == 'print-rebalance':
-                logger.info("Calculating rebalance (preview mode)")
-                result = await rebalancer.calculate_rebalance(account_config)
+    if not result.success:
+        logger.error(f"Rebalance failed: {result.error}")
+        raise Exception(f"Rebalance failed: {result.error}")
 
-                proposed_trades = result.proposed_trades
-                logger.info(f"Preview calculated: {len(proposed_trades)} proposed trades")
+    logger.info(f"Rebalance completed: {len(result.orders)} trades executed")
 
-                if proposed_trades:
-                    logger.info("=== PROPOSED TRADES ===")
-                    for trade in proposed_trades:
-                        action = "BUY" if trade.quantity > 0 else "SELL"
-                        logger.info(f"{action} {abs(trade.quantity)} shares of {trade.symbol} @ ${trade.price}")
-                    logger.info("=====================")
-                else:
-                    logger.info("No trades required - portfolio is already balanced")
+    # Record execution for PDT protection
+    pdt_service = PDTProtectionService(logger=logger)
+    pdt_service.record_execution(account_config.account_id)
 
-                return {
-                    'success': True,
-                    'action': 'print-rebalance',
-                    'proposed_trades': len(proposed_trades),
-                    'current_value': result.current_value,
-                    'trades_detail': [trade.model_dump() for trade in proposed_trades],
-                    'warnings': result.warnings
-                }
+    return {
+        'success': True,
+        'action': 'rebalance',
+        'trades_executed': len(result.orders),
+        'total_value': result.total_value,
+        'cash_balance': result.cash_balance,
+        'warnings': result.warnings
+    }
 
-            else:
-                raise ValueError(f"Unknown command: {event_data.get('exec')}")
+async def _execute_preview_rebalance(rebalancer, account_config: AccountConfig, logger) -> dict:
+    """Execute preview rebalance without real trades"""
+    logger.info("Calculating rebalance (preview mode)")
+    result = await rebalancer.calculate_rebalance(account_config)
+
+    proposed_trades = result.proposed_trades
+    logger.info(f"Preview calculated: {len(proposed_trades)} proposed trades")
+
+    if proposed_trades:
+        _log_proposed_trades(proposed_trades, logger)
+    else:
+        logger.info("No trades required - portfolio is already balanced")
+
+    return {
+        'success': True,
+        'action': 'print-rebalance',
+        'proposed_trades': len(proposed_trades),
+        'current_value': result.current_value,
+        'trades_detail': [trade.model_dump() for trade in proposed_trades],
+        'warnings': result.warnings
+    }
+
+def _log_proposed_trades(proposed_trades: list, logger):
+    """Log proposed trades in a readable format"""
+    logger.info("=== PROPOSED TRADES ===")
+    for trade in proposed_trades:
+        action = "BUY" if trade.quantity > 0 else "SELL"
+        logger.info(f"{action} {abs(trade.quantity)} shares of {trade.symbol} @ ${trade.price}")
+    logger.info("=====================")
 
 # Account-Level Logging Architecture
 

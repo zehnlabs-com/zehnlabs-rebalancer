@@ -35,34 +35,21 @@ class IBKRRebalancer(BaseRebalancer):
 
     async def rebalance_account(self, account: AccountConfig) -> RebalanceResult:
         """Execute rebalancing for account"""
-        # Imports already at top of file
-
         account_id = account.account_id
         self.logger.info(f"Starting rebalance for account {account_id}")
 
         try:
-            # Get target allocations
-            allocation_service = AllocationService(logger=self.logger)
-            allocations = await allocation_service.get_allocations(account)
-
-            if account.replacement_set:
-                replacement_service = ReplacementService(logger=self.logger)
-                allocations = replacement_service.apply_replacements_with_scaling(
-                    allocations=allocations,
-                    replacement_set_name=account.replacement_set
-                )
-
-            self._log_target_allocations(allocations)
-
+            # Get target allocations and initial snapshot
+            allocations = await self._get_target_allocations(account)
             snapshot = await self.ibkr.get_account_snapshot(account_id)
-
             self._log_account_snapshot("INITIAL", snapshot)
 
+            # Get market prices for all symbols
             all_symbols = list(set([a.symbol for a in allocations] +
                                   [p.symbol for p in snapshot.positions]))
             market_prices = await self.ibkr.get_multiple_market_prices(all_symbols)
 
-            # Calculate required trades
+            # Calculate and execute sell orders
             calculator = TradeCalculator(logger=self.logger)
             result = calculator.calculate_trades(
                 snapshot=snapshot,
@@ -70,30 +57,14 @@ class IBKRRebalancer(BaseRebalancer):
                 market_prices=market_prices,
                 account_config=account
             )
-            trades = result.trades
             warnings = result.warnings
 
-            # Cancel any pending orders first
             await self._cancel_pending_orders(account_id)
+            self._log_planned_orders(result.trades)
 
-            # Log all planned orders
-            self._log_planned_orders(trades)
+            sell_orders = await self._execute_sell_orders(account_id, result.trades)
 
-            sell_orders = [t for t in trades if t.quantity < 0]
-            if sell_orders:
-                self.logger.info(f"Executing {len(sell_orders)} sell orders")
-                for trade in sell_orders:
-                    order_result = await self.ibkr.place_order(
-                        account_id=account_id,
-                        symbol=trade.symbol,
-                        quantity=trade.quantity,
-                        order_type=trade.order_type,
-                        price=trade.price
-                    )
-                    trade.order_id = order_result.order_id
-
-                await self._wait_for_orders_complete(sell_orders)
-
+            # Recalculate and execute buy orders with updated cash balance
             snapshot = await self.ibkr.get_account_snapshot(account_id, use_cached_prices=True)
             self.logger.info(f"Cash balance after sells: ${snapshot.cash_balance:,.2f}")
 
@@ -106,96 +77,20 @@ class IBKRRebalancer(BaseRebalancer):
             )
             warnings.extend(buy_result.warnings)
 
-            buy_orders = [t for t in buy_result.trades if t.quantity > 0]
-            if buy_orders:
-                # Calculate available cash for buys (unified with trade_calculator formula)
-                min_reserve = self.config.trading.minimum_cash_reserve_usd
-                commission_divisor = self.config.trading.commission_divisor
+            orders_to_execute = await self._execute_buy_orders(
+                account_id=account_id,
+                buy_trades=buy_result.trades,
+                snapshot=snapshot,
+                allocations=allocations,
+                warnings=warnings
+            )
 
-                if snapshot.cash_balance < min_reserve:
-                    available_cash = 0
-                else:
-                    available_cash = (snapshot.cash_balance - min_reserve) / commission_divisor
-
-                self.logger.info(f"Executing {len(buy_orders)} buy orders with ${available_cash:.2f} available cash")
-
-                # Build position map and allocation map for tracking skipped symbols
-                position_map = {pos.symbol: pos for pos in snapshot.positions}
-                allocation_map = {alloc.symbol: alloc.allocation for alloc in allocations}
-
-                # Track execution and skips
-                orders_to_execute = []
-                skipped_insufficient_cash = []
-
-                for trade in buy_orders:
-                    estimated_cost = trade.quantity * trade.price
-
-                    if estimated_cost > available_cash:
-                        # Cannot afford this buy - skip it
-                        current_position = position_map.get(trade.symbol)
-                        is_missing = not (current_position and current_position.quantity > 0)
-                        allocation_pct = allocation_map.get(trade.symbol, 0) * 100
-
-                        skipped_insufficient_cash.append({
-                            'trade': trade,
-                            'shortfall': estimated_cost - available_cash,
-                            'is_missing': is_missing,
-                            'allocation_pct': allocation_pct
-                        })
-
-                        self.logger.info(
-                            f"Skipped buy of {trade.symbol} ({allocation_pct:.2f}% allocation): "
-                            f"Insufficient cash (${available_cash:.2f} available, ${estimated_cost:.2f} needed). "
-                            f"{'Missing from portfolio' if is_missing else 'Already held'}."
-                        )
-                        continue
-
-                    # Can afford - add to execution list
-                    orders_to_execute.append(trade)
-                    available_cash -= estimated_cost  # Track remaining cash for subsequent orders
-
-                # Generate warnings for skipped items
-                skipped_missing = [s for s in skipped_insufficient_cash if s['is_missing']]
-                skipped_existing = [s for s in skipped_insufficient_cash if not s['is_missing']]
-
-                if skipped_missing:
-                    for skip in skipped_missing:
-                        t = skip['trade']
-                        warning_msg = (
-                            f"Missing symbol {t.symbol} ({skip['allocation_pct']:.2f}% target allocation) "
-                            f"could not be purchased. Shortfall: ${skip['shortfall']:.2f}"
-                        )
-                        warnings.append(warning_msg)
-                        self.logger.warning(warning_msg)
-
-                if skipped_existing:
-                    # Less urgent - just info
-                    symbols_info = [f"{s['trade'].symbol} ({s['allocation_pct']:.2f}%)" for s in skipped_existing]
-                    info_msg = f"Portfolio optimization incomplete for: {', '.join(symbols_info)}"
-                    warnings.append(info_msg)
-                    self.logger.info(info_msg)
-
-                # Execute orders that passed the cash check
-                for trade in orders_to_execute:
-                    order_result = await self.ibkr.place_order(
-                        account_id=account_id,
-                        symbol=trade.symbol,
-                        quantity=trade.quantity,
-                        order_type=trade.order_type,
-                        price=trade.price
-                    )
-                    trade.order_id = order_result.order_id
-
-                if orders_to_execute:
-                    await self._wait_for_orders_complete(orders_to_execute)
-
-            # Get final snapshot using cached prices to avoid rate limiting
+            # Get final snapshot and return results
             final_snapshot = await self.ibkr.get_account_snapshot(account_id, use_cached_prices=True)
             self._log_account_snapshot("FINAL", final_snapshot)
 
             self.logger.info(f"Rebalance completed successfully for account {account_id}")
-            # Combine executed orders (some buy orders may have been skipped due to cash constraints)
-            executed_orders = sell_orders + (orders_to_execute if buy_orders else [])
+            executed_orders = sell_orders + orders_to_execute
             return RebalanceResult(
                 orders=executed_orders,
                 total_value=final_snapshot.total_value,
@@ -212,6 +107,154 @@ class IBKRRebalancer(BaseRebalancer):
                 success=False,
                 error=str(e)
             )
+
+    async def _get_target_allocations(self, account: AccountConfig) -> List[AllocationItem]:
+        """Get and process target allocations for account"""
+        allocation_service = AllocationService(logger=self.logger)
+        allocations = await allocation_service.get_allocations(account)
+
+        if account.replacement_set:
+            replacement_service = ReplacementService(logger=self.logger)
+            allocations = replacement_service.apply_replacements_with_scaling(
+                allocations=allocations,
+                replacement_set_name=account.replacement_set
+            )
+
+        self._log_target_allocations(allocations)
+        return allocations
+
+    async def _execute_sell_orders(self, account_id: str, trades: List[Trade]) -> List[Trade]:
+        """Execute all sell orders and wait for completion"""
+        sell_orders = [t for t in trades if t.quantity < 0]
+        
+        if not sell_orders:
+            return []
+
+        self.logger.info(f"Executing {len(sell_orders)} sell orders")
+        
+        for trade in sell_orders:
+            order_result = await self.ibkr.place_order(
+                account_id=account_id,
+                symbol=trade.symbol,
+                quantity=trade.quantity,
+                order_type=trade.order_type,
+                price=trade.price
+            )
+            trade.order_id = order_result.order_id
+
+        await self._wait_for_orders_complete(sell_orders)
+        return sell_orders
+
+    async def _execute_buy_orders(self, account_id: str, buy_trades: List[Trade], 
+                                  snapshot: AccountSnapshot, allocations: List[AllocationItem],
+                                  warnings: List[str]) -> List[Trade]:
+        """Execute buy orders with cash constraint checking"""
+        buy_orders = [t for t in buy_trades if t.quantity > 0]
+        
+        if not buy_orders:
+            return []
+
+        # Calculate available cash using same formula as trade_calculator
+        available_cash = self._calculate_available_cash(snapshot.cash_balance)
+        
+        self.logger.info(f"Executing {len(buy_orders)} buy orders with ${available_cash:.2f} available cash")
+
+        # Filter orders based on cash availability and generate warnings
+        orders_to_execute, skipped_trades = self._filter_buy_orders_by_cash(
+            buy_orders=buy_orders,
+            available_cash=available_cash,
+            snapshot=snapshot,
+            allocations=allocations
+        )
+
+        # Generate warnings for skipped trades
+        self._generate_skipped_order_warnings(skipped_trades, warnings)
+
+        # Execute affordable orders
+        for trade in orders_to_execute:
+            order_result = await self.ibkr.place_order(
+                account_id=account_id,
+                symbol=trade.symbol,
+                quantity=trade.quantity,
+                order_type=trade.order_type,
+                price=trade.price
+            )
+            trade.order_id = order_result.order_id
+
+        if orders_to_execute:
+            await self._wait_for_orders_complete(orders_to_execute)
+
+        return orders_to_execute
+
+    def _calculate_available_cash(self, cash_balance: float) -> float:
+        """Calculate available cash for buy orders"""
+        min_reserve = self.config.trading.minimum_cash_reserve_usd
+        commission_divisor = self.config.trading.commission_divisor
+
+        if cash_balance < min_reserve:
+            return 0
+        return (cash_balance - min_reserve) / commission_divisor
+
+    def _filter_buy_orders_by_cash(self, buy_orders: List[Trade], available_cash: float,
+                                   snapshot: AccountSnapshot, allocations: List[AllocationItem]):
+        """Filter buy orders to only those affordable within cash constraints"""
+        position_map = {pos.symbol: pos for pos in snapshot.positions}
+        allocation_map = {alloc.symbol: alloc.allocation for alloc in allocations}
+
+        orders_to_execute = []
+        skipped_trades = []
+        remaining_cash = available_cash
+
+        for trade in buy_orders:
+            estimated_cost = trade.quantity * trade.price
+
+            if estimated_cost > remaining_cash:
+                # Cannot afford this buy - track it
+                current_position = position_map.get(trade.symbol)
+                is_missing = not (current_position and current_position.quantity > 0)
+                allocation_pct = allocation_map.get(trade.symbol, 0) * 100
+
+                skipped_trades.append({
+                    'trade': trade,
+                    'shortfall': estimated_cost - remaining_cash,
+                    'is_missing': is_missing,
+                    'allocation_pct': allocation_pct
+                })
+
+                self.logger.info(
+                    f"Skipped buy of {trade.symbol} ({allocation_pct:.2f}% allocation): "
+                    f"Insufficient cash (${remaining_cash:.2f} available, ${estimated_cost:.2f} needed). "
+                    f"{'Missing from portfolio' if is_missing else 'Already held'}."
+                )
+                continue
+
+            # Can afford - add to execution list
+            orders_to_execute.append(trade)
+            remaining_cash -= estimated_cost
+
+        return orders_to_execute, skipped_trades
+
+    def _generate_skipped_order_warnings(self, skipped_trades: List[dict], warnings: List[str]):
+        """Generate warnings for skipped buy orders"""
+        skipped_missing = [s for s in skipped_trades if s['is_missing']]
+        skipped_existing = [s for s in skipped_trades if not s['is_missing']]
+
+        # Critical warnings for missing symbols
+        for skip in skipped_missing:
+            trade = skip['trade']
+            warning_msg = (
+                f"Missing symbol {trade.symbol} ({skip['allocation_pct']:.2f}% target allocation) "
+                f"could not be purchased. Shortfall: ${skip['shortfall']:.2f}"
+            )
+            warnings.append(warning_msg)
+            self.logger.warning(warning_msg)
+
+        # Info warnings for existing symbols
+        if skipped_existing:
+            symbols_info = [f"{s['trade'].symbol} ({s['allocation_pct']:.2f}%)" for s in skipped_existing]
+            info_msg = f"Portfolio optimization incomplete for: {', '.join(symbols_info)}"
+            warnings.append(info_msg)
+            self.logger.info(info_msg)
 
     async def calculate_rebalance(self, account: AccountConfig) -> CalculateRebalanceResult:
         """Calculate rebalance without executing (print-rebalance)"""
