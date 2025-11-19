@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import List
 from contextlib import asynccontextmanager
-from app.models import AccountConfig, EventData
+from app.models import AccountConfig, AccountExecutionResult, StrategyExecutionResult
 from app.services.pdt_protection_service import PDTProtectionService
 
 def execute_strategy_batch(strategy_name: str, accounts: List[dict], event_data: dict, env: dict) -> dict:
@@ -32,7 +32,8 @@ def execute_strategy_batch(strategy_name: str, accounts: List[dict], event_data:
         result = loop.run_until_complete(
             process_strategy_accounts(strategy_name, accounts, event_data)
         )
-        return result
+        # Convert Pydantic model to dict for subprocess serialization
+        return result.model_dump()
     finally:
         try:
             loop.run_until_complete(loop.shutdown_asyncgens())
@@ -49,7 +50,7 @@ def extract_client_id_from_account(account_id: str) -> int:
     numeric_part = ''.join(filter(str.isdigit, account_id))
     return int(numeric_part)
 
-async def process_strategy_accounts(strategy_name: str, accounts: List[dict], event_data: dict):
+async def process_strategy_accounts(strategy_name: str, accounts: List[dict], event_data: dict) -> StrategyExecutionResult:
     """Process all accounts for a strategy in parallel"""
 
     tasks = []
@@ -64,22 +65,22 @@ async def process_strategy_accounts(strategy_name: str, accounts: List[dict], ev
     # Execute all accounts in parallel
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Format results
-    return {
-        'strategy': strategy_name,
-        'timestamp': datetime.now().isoformat(),
-        'event': event_data.get('exec'),
-        'accounts_processed': len(accounts),
-        'results': [
-            {
-                'account_id': acc['account_id'],
-                'success': not isinstance(res, Exception),
-                'error': str(res) if isinstance(res, Exception) else None,
-                'details': res if not isinstance(res, Exception) else None
-            }
+    # Format results using Pydantic models
+    return StrategyExecutionResult(
+        strategy=strategy_name,
+        timestamp=datetime.now().isoformat(),
+        event=event_data.get('exec'),
+        accounts_processed=len(accounts),
+        results=[
+            AccountExecutionResult(
+                account_id=acc['account_id'],
+                success=not isinstance(res, Exception),
+                error=str(res) if isinstance(res, Exception) else None,
+                details=res if not isinstance(res, Exception) else None
+            )
             for acc, res in zip(accounts, results)
         ]
-    }
+    )
 
 async def process_single_account(account: dict, client_id: int, event_data: dict):
     """Process a single account with dedicated IBKR client"""

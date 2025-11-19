@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from app_config import get_config
-from app.models import PDTCheckResult, PDTExecutionInfo
+from app.models import PDTCheckResult
 
 
 class PDTProtectionService:
@@ -149,26 +149,3 @@ class PDTProtectionService:
             Full path to the account's JSON tracking file
         """
         return os.path.join(self.data_dir, f"{account_id}.json")
-
-    def get_last_execution_info(self, account_id: str) -> Optional[PDTExecutionInfo]:
-        """
-        Get the last execution information for an account (for debugging/monitoring).
-
-        Args:
-            account_id: The account ID
-
-        Returns:
-            PDTExecutionInfo with timestamps, or None if no record
-        """
-        file_path = self._get_file_path(account_id)
-
-        if not os.path.exists(file_path):
-            return None
-
-        try:
-            with open(file_path, 'r') as f:
-                data = json.load(f)
-            return PDTExecutionInfo(**data)
-        except Exception as e:
-            self.logger.error(f"Error reading execution info for {account_id}: {e}")
-            return None

@@ -17,7 +17,6 @@ try:
         OrderResult,
         OpenOrder,
         ContractPrice,
-        BrokerConnectionError,
     )
     from app_config import get_config
     from .models import CachedPrice
@@ -325,45 +324,6 @@ class IBKRClient(BrokerClient):
         except Exception as e:
             self.logger.error(f"Batch price request failed: {e}")
             raise ValueError(f"Batch pricing system failure. This could be a serious system issue that may require manual resolution.")
-
-    async def _get_single_market_price(self, symbol: str) -> float:
-        """Get market price for a single symbol with exchange fallback"""
-        # Common exchanges to try in order of preference
-        exchanges = ['SMART', 'ARCA', 'NASDAQ', 'NYSE', 'NYSEARCA']
-
-        for exchange in exchanges:
-            try:
-                contract = Stock(symbol, exchange, 'USD')
-                qualified = await self.ib.qualifyContractsAsync(contract)
-
-                if qualified:
-                    contract = qualified[0]
-                    ticker = self.ib.reqMktData(contract, '', False, False)
-
-                    # Wait longer for data to populate
-                    await asyncio.sleep(2.0)
-
-                    if ticker.last and ticker.last > 0:
-                        price = ticker.last
-                        self.logger.info(f"Got price for {symbol} from {exchange}: ${price}")
-                        self.ib.cancelMktData(contract)
-                        return price
-                    elif ticker.close and ticker.close > 0:
-                        price = ticker.close
-                        self.logger.info(f"Got close price for {symbol} from {exchange}: ${price}")
-                        self.ib.cancelMktData(contract)
-                        return price
-
-                    self.ib.cancelMktData(contract)
-                    self.logger.debug(f"No valid price data for {symbol} on {exchange}")
-
-            except Exception as e:
-                self.logger.debug(f"Failed to get price for {symbol} on {exchange}: {e}")
-                continue
-
-        # If all exchanges fail, this is a critical error - we cannot proceed
-        self.logger.error(f"Failed to get price for {symbol} on any exchange")
-        raise ValueError(f"Cannot obtain valid price for {symbol} from any exchange. Trading operations cannot proceed safely.")
 
     async def place_order(self, account_id: str, symbol: str, quantity: int, order_type: str = 'MARKET', price: float = None) -> OrderResult:
         """Place an order"""
