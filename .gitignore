@@ -61,3 +61,5 @@ CLAUDE.md
 # Runtime data
 data/manual-rebalance/
 data/last-executions/*.json
+working-docs/refactor-implementation.md
+working-docs/refactor-plan.md
