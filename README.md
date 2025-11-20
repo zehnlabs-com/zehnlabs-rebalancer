@@ -54,11 +54,23 @@ The system ensures that **at least one share is owned** for each symbol in the t
 
 ## Installation and Setup
 
-This project is designed to be run using Docker. You will need Docker Desktop (for Windows/Mac) or Docker Engine (for Linux).
+### Prerequisites
 
--   [Install Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
--   [Install Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/)
--   [Install Docker Engine for Linux](https://docs.docker.com/engine/install/)
+Before getting started, ensure you have the following installed:
+
+-   **Git** - Required to clone the repository
+    -   [Install Git for Windows](https://git-scm.com/download/win)
+    -   [Install Git for Mac](https://git-scm.com/download/mac)
+    -   [Install Git for Linux](https://git-scm.com/download/linux)
+-   **Docker Desktop** (Windows/Mac) or **Docker Engine** (Linux) - Version 4.49.0 or higher
+    -   [Install Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
+    -   [Install Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/)
+    -   [Install Docker Engine for Linux](https://docs.docker.com/engine/install/)
+
+**Recommended System Requirements:**
+-   4GB RAM
+-   20GB free disk space
+-   2GHz CPU or better
 
 ### Step 1: Get the Code
 
@@ -87,7 +99,7 @@ Now, edit the `.env` file with your specific details:
 | `REBALANCE_EVENT_SUBSCRIPTION_API_KEY` | API key for receiving real-time rebalance events. Also obtained from the `#FintechZL_bot`.                                             |
 | `TRADING_MODE`                       | Set to `live` for real money trading or `paper` for paper trading.                                                                       |
 | `AUTO_RESTART_TIME`                  | The time (in `America/New_York` timezone) when the IBKR Gateway will automatically restart. Defaults to `10:00 PM`. E.g., `2:00 PM`.      |
-| `VNC_PASSWORD`                       | A password for optional VNC access to the IBKR Gateway GUI.                                                                            |
+| `VNC_PASSWORD`                       | A password for optional VNC access to the IBKR Gateway GUI. **Choose a strong password.**                                              |
 | `USER_NOTIFICATIONS_ENABLED`         | Set to `true` to enable push notifications via ntfy.sh.                                                                                |
 | `USER_NOTIFICATIONS_CHANNEL`         | A unique, hard-to-guess topic name for your ntfy.sh notifications (e.g., `my-secret-rebalancer-alerts-a1b2c3`).                         |
 
@@ -107,13 +119,30 @@ accounts:
     type: paper            # Must match TRADING_MODE in .env
     enabled: true
     strategy_name: etf-blend-200-35 # The allocation strategy to follow
+    cash_reserve_percent: 0.0 # Percentage of equity to reserve as buffer (0-100)
     pdt_protection_enabled: true # Prevents more than one rebalance per day
 ```
 
 -   `account_id`: Your IBKR account number.
 -   `type`: `live` or `paper`. The rebalancer will only process accounts whose `type` matches the `TRADING_MODE` set in your `.env` file.
 -   `strategy_name`: The name of the allocation strategy you are subscribed to.
--   `pdt_protection_enabled`: If `true`, the system will not rebalance an account more than once per trading day to help avoid Pattern Day Trader (PDT) rule violations.
+-   `cash_reserve_percent`: Percentage of equity to reserve as a buffer for quickly changing prices (0-100). Default is 0%.
+-   `pdt_protection_enabled`: If `true`, the system will rebalance at most once per trading day to help avoid Pattern Day Trader (PDT) rule violations. Next allowed rebalance is at 9:30 AM ET the following day (configurable in `config.yaml`).
+-   `replacement_set` (optional): If you want to trade equities different from your strategy allocations (e.g., IRA accounts with ETF restrictions), configure replacement sets in `replacement-sets.yaml` and reference them here.
+
+### Additional Configuration Files
+
+**`config.yaml`** - Advanced trading parameters (slippage, thresholds, timeouts, etc.)
+-   Most users do not need to modify this file
+-   Advanced users can optimize these settings as needed
+-   The file contains inline documentation for all parameters
+
+**`replacement-sets.yaml`** - ETF replacement mappings
+-   Use this if you need to trade different equities than your strategy specifies
+-   Common for IRA accounts with restrictions on certain ETFs
+-   Reference a replacement set in your account config with `replacement_set: ira`
+
+Both files require a service restart after changes: `docker compose restart`
 
 ### Step 4: Start the Services
 
@@ -124,6 +153,22 @@ docker compose up -d
 ```
 
 The `-d` flag runs the services in detached mode (in the background).
+
+### Step 5: Verify the Setup
+
+After starting the services and approving the IBKR authentication on your mobile app, verify everything is working correctly by performing a test rebalance:
+
+```bash
+./tools/rebalance.sh -account YOUR_ACCOUNT_ID
+```
+
+This performs a **dry-run** (preview mode) that calculates trades without executing them. Check the logs to see the calculated orders:
+
+```bash
+docker compose logs -f event-broker
+```
+
+If you have `USER_NOTIFICATIONS_ENABLED=true`, you'll also receive a notification with the rebalance summary. If the preview looks correct and shows expected trades, your setup is complete!
 
 ---
 
@@ -160,7 +205,7 @@ From the project's root directory, run the script with the following parameters:
 ./tools/rebalance.sh -account YOUR_ACCOUNT_ID -exec rebalance
 ```
 
-Replace `YOUR_ACCOUNT_ID` with your actual IBKR account number (e.g., `U1234567`) that is configured in accounts/yaml.
+Replace `YOUR_ACCOUNT_ID` with your actual IBKR account number (e.g., `U1234567`) that is configured in `accounts.yaml`.
 
 ---
 
@@ -195,6 +240,32 @@ docker compose logs -f ibkr-gateway
 ```
 
 The `-f` flag follows the log output in real-time.
+
+---
+
+## Support and Contributing
+
+### Getting Help
+
+If you encounter issues or have questions:
+-   Check the [GitHub Discussions](https://github.com/Zehnlabs-com/Zehnlabs-rebalancer/discussions) for community support
+-   Search existing discussions to see if your question has been answered
+-   Create a new discussion if you need help
+
+### Contributing
+
+Contributions are welcome! To contribute:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/your-feature`)
+3. Make your changes and test thoroughly
+4. Commit your changes (`git commit -m 'Add some feature'`)
+5. Push to the branch (`git push origin feature/your-feature`)
+6. Open a Pull Request
+
+Please ensure your code follows the existing style and includes appropriate tests.
+
+---
 
 ## License
 
