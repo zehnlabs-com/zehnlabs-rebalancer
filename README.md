@@ -4,13 +4,16 @@
 
 The Zehnlabs Rebalancer is an automated tool for rebalancing your accounts using target allocations provided by various Zehnlabs strategies. It is designed to run continuously and execute trades automatically based on real-time events.
 
+**Multi-Account & Multi-Strategy Support**
+The system is fully capable of managing multiple IBKR accounts simultaneously. You can configure any number of accounts, and each account can be aligned with a specific Zehnlabs strategy. Whether you have multiple accounts following the same strategy or different strategies for different accounts, the rebalancer handles them all concurrently.
+
 ---
 
-### ⚠️ Disclaimer
+### Disclaimer
 
 **This is a community-supported project and is not an official product of Zehnlabs. It comes without any implicit or explicit warranty of any kind. Zehnlabs DOES NOT provide any support for this software.**
 
-Trading financial instruments involves substantial risk and is not suitable for everyone. Past performance may not be indicative of future results. For educational purposes only. Should not be considered as financial advice.
+This reference implementation demonstrates how to automate portfolio rebalancing using the Zehnlabs API. Although fully capable of executing real trades, it is primarily an educational tool intended to show developers how to integrate the Zehnlabs API with broker trading systems.
 
 ---
 
@@ -29,7 +32,7 @@ Before using this software, please understand the following limitations:
 
 ## How It Works
 
-The rebalancer is designed to align your account with a target strategy while maximizing the use of your available cash.
+The rebalancer is designed to align your configured accounts with their respective target strategies while maximizing the use of available cash.
 
 ### Two-Phase Rebalancing
 
@@ -68,9 +71,9 @@ Before getting started, ensure you have the following installed:
     -   [Install Docker Engine for Linux](https://docs.docker.com/engine/install/)
 
 **Recommended System Requirements:**
--   4GB RAM
+-   1GB RAM
 -   20GB free disk space
--   2GHz CPU or better
+-   1GHz CPU or better
 
 ### Step 1: Get the Code
 
@@ -98,7 +101,7 @@ Now, edit the `.env` file with your specific details:
 | `ALLOCATIONS_API_KEY`                | API key for fetching strategy allocations. Obtain this by sending the `/me` command to the `#FintechZL_bot` on Telegram.                 |
 | `REBALANCE_EVENT_SUBSCRIPTION_API_KEY` | API key for receiving real-time rebalance events. Also obtained from the `#FintechZL_bot`.                                             |
 | `TRADING_MODE`                       | Set to `live` for real money trading or `paper` for paper trading.                                                                       |
-| `AUTO_RESTART_TIME`                  | The time (in `America/New_York` timezone) when the IBKR Gateway will automatically restart. Defaults to `10:00 PM`. E.g., `2:00 PM`.      |
+| `AUTO_RESTART_TIME`                  | The time (in `America/New_York` timezone) when the IBKR Gateway will automatically restart. Defaults to `10:00 PM`. E.g., `02:00 PM`.      |
 | `VNC_PASSWORD`                       | A password for optional VNC access to the IBKR Gateway GUI. **Choose a strong password.**                                              |
 | `USER_NOTIFICATIONS_ENABLED`         | Set to `true` to enable push notifications via ntfy.sh.                                                                                |
 | `USER_NOTIFICATIONS_CHANNEL`         | A unique, hard-to-guess topic name for your ntfy.sh notifications (e.g., `my-secret-rebalancer-alerts-a1b2c3`).                         |
@@ -111,14 +114,14 @@ Create an `accounts.yaml` file by copying the example:
 cp accounts.yaml.example accounts.yaml
 ```
 
-Edit `accounts.yaml` to define which IBKR accounts should be managed:
+Edit `accounts.yaml` to define which IBKR accounts should be managed. You can configure multiple accounts, each with its own strategy:
 
 ```yaml
 accounts:
   - account_id: U1234567  # Your IBKR account number
     type: paper            # Must match TRADING_MODE in .env
     enabled: true
-    strategy_name: etf-blend-200-35 # The allocation strategy to follow
+    strategy_name: etf-blend-103-20 # The allocation strategy to follow
     cash_reserve_percent: 0.0 # Percentage of equity to reserve as buffer (0-100)
     pdt_protection_enabled: true # Prevents more than one rebalance per day
 ```
