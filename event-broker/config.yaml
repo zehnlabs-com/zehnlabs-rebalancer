@@ -1,6 +1,0 @@
-# Event Broker Service Configuration
-
-# Application settings
-application:
-  accounts_file: "/app/config/accounts.yaml" # Path to account configuration file
-
