@@ -82,6 +82,14 @@ trading:
 
   # --- Order Execution ---
 
+  # Time In Force (TIF) for all orders - per IBKR TWS API specification
+  # DAY = Valid for the day only (recommended for intraday rebalancing)
+  # GTC = Good till canceled (with auto-cancel rules: 90 days inactive, quarter end, corp actions)
+  # IOC = Immediate or cancel (fill immediately or cancel unfilled portion)
+  # GTD = Good till date (requires GoodTillDate property set)
+  # Impact: CRITICAL - Must be explicitly set to prevent IBKR from modifying orders
+  order_tif: DAY
+
   # Slippage buffer added to ask price for buy orders (as percentage)
   # Range: 0.1-5.0% | Impact: CRITICAL - Too low = unfilled orders; too high = overpaying
   # Formula: limit_price = ask_price * (1 + buy_slippage_percent/100)

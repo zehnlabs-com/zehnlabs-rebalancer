@@ -344,6 +344,8 @@ class IBKRClient(BrokerClient):
             else:
                 order = MarketOrder(action, abs(quantity))
 
+            # Set Time In Force to prevent IBKR from modifying and resubmitting orders
+            order.tif = self.config.trading.order_tif
             order.account = account_id
 
             # Place order

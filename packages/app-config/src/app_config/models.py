@@ -95,6 +95,10 @@ class TradingConfig(BaseModel):
     )
 
     # Order Execution
+    order_tif: Literal["DAY", "GTC"] = Field(
+        default="DAY",
+        description="Time In Force for all orders. DAY=day only, GTC=good til canceled."
+    )
     buy_slippage_percent: float = Field(
         default=0.5,
         ge=0.1,
