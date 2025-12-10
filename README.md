@@ -21,8 +21,8 @@ This reference implementation demonstrates how to automate portfolio rebalancing
 
 Before using this software, please understand the following limitations:
 
--   **Broker Support:** Currently, **Interactive Brokers is the only supported broker**.
--   **Account Requirements:** You will need an **IBKR Pro account** (not commission-free). You will also need a subscription to the following IBKR market data feeds:
+-   **Broker Support:** Currently, [**Interactive Brokers](https://www.interactivebrokers.com) is the only supported broker**.
+-   **Account Requirements:** You will need an [**IBKR Pro account**](https://www.interactivebrokers.com/en/general/compare-lite-pro.php) (not commission-free). You will also need a subscription to the following IBKR market data feeds:
     -   **US Securities Snapshot and Futures Value Bundle (NP,L1):** $10.00/month (waived if monthly commissions reach $30).
     -   **Cboe One Add-On Bundle (NP,L1):** $1.00/month (waived if monthly commissions reach $5).
 -   **Fractional Shares:** The IBKR TWS API **does not support trading fractional shares**. Consequently, this tool cannot trade them.
