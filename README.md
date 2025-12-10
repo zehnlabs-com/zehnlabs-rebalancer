@@ -29,7 +29,7 @@ Before using this software, please understand the following limitations:
 -   **Dividend Reinvestment:** Due to the lack of fractional share support, you should **disable automatic dividend reinvestment** in your IBKR account settings to prevent the creation of small, untradeable positions.
 -   **Order Types:** To ensure trades are filled while protecting against unfavorable prices, the system uses **`MARKET` orders for sells** and **`LIMIT` orders for buys**. Buy orders are submitted with a limit price set slightly above the current ask price to increase the likelihood of execution. This "slippage" buffer is configurable in `config.yaml` (`trading.buy_slippage_percent`) and defaults to 0.5%.
 -   **Time In Force (TIF):** All orders are submitted with an explicit Time In Force setting (default: `DAY`). The TIF setting is configurable in `config.yaml` (`trading.order_tif`).
--   **Performance Discrepancies:** Due to these constraints (e.g., rounding to whole shares, scaling, order execution logic), your portfolio's performance, P&L, and other metrics may somewhat differ from what you would achieve with manual trading.
+-   **Performance Discrepancies:** Due to these constraints (e.g., rounding to whole shares, scaling, order execution logic), your portfolio's performance, P&L, and other metrics may somewhat differ from the ideal.
 
 ## How It Works
 
