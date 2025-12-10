@@ -5,7 +5,7 @@
 The Zehnlabs Rebalancer is an automated tool for rebalancing your accounts using target allocations provided by various Zehnlabs strategies. It is designed to run continuously and execute trades automatically based on real-time events.
 
 **Multi-Account & Multi-Strategy Support**
-The system is fully capable of managing multiple IBKR accounts simultaneously. You can configure any number of accounts, and each account can be aligned with a specific Zehnlabs strategy. Whether you have multiple accounts following the same strategy or different strategies for different accounts, the rebalancer handles them all concurrently.
+The system is fully capable of managing multiple IBKR accounts under your login simultaneously. You can configure any number of accounts, and any account can be aligned with any Zehnlabs strategy that you subscribe to. 
 
 ---
 
@@ -81,8 +81,8 @@ Before getting started, ensure you have the following installed:
 Clone this repository to your local machine:
 
 ```bash
-git clone https://github.com/Zehnlabs-com/Zehnlabs-rebalancer.git
-cd Zehnlabs-rebalancer
+git clone https://github.com/zehnlabs-com/zehnlabs-rebalancer.git
+cd zehnlabs-rebalancer
 ```
 
 ### Step 2: Configure Environment Variables
