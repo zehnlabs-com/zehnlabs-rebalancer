@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-The Zehnlabs Rebalancer is an automated tool for rebalancing your accounts using target allocations provided by various Zehnlabs strategies. It is designed to run continuously and execute trades automatically based on real-time events.
+The Zehnlabs Rebalancer is an automated tool for rebalancing your accounts using target allocations provided by various [Zehnlabs](https://zehnlabs.com) strategies. It is designed to run continuously and execute trades automatically based on real-time events.
 
 **Multi-Account & Multi-Strategy Support**
 The system is fully capable of managing multiple IBKR accounts under your login simultaneously. You can configure any number of accounts, and any account can be aligned with any Zehnlabs strategy that you subscribe to. 
