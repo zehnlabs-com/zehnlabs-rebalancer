@@ -2,10 +2,10 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-The Zehnlabs Rebalancer is an automated tool for rebalancing your accounts using target allocations provided by various Zehnlabs strategies. It is designed to run continuously and execute trades automatically based on real-time events.
+The Zehnlabs Rebalancer is an automated tool for rebalancing your accounts using target allocations provided by various [Zehnlabs](https://zehnlabs.com) strategies. It is designed to run continuously and execute trades automatically based on real-time events.
 
 **Multi-Account & Multi-Strategy Support**
-The system is fully capable of managing multiple IBKR accounts simultaneously. You can configure any number of accounts, and each account can be aligned with a specific Zehnlabs strategy. Whether you have multiple accounts following the same strategy or different strategies for different accounts, the rebalancer handles them all concurrently.
+The system is fully capable of managing multiple IBKR accounts under your login simultaneously. You can configure any number of accounts, and any account can be aligned with any Zehnlabs strategy that you subscribe to. 
 
 ---
 
@@ -29,7 +29,7 @@ Before using this software, please understand the following limitations:
 -   **Dividend Reinvestment:** Due to the lack of fractional share support, you should **disable automatic dividend reinvestment** in your IBKR account settings to prevent the creation of small, untradeable positions.
 -   **Order Types:** To ensure trades are filled while protecting against unfavorable prices, the system uses **`MARKET` orders for sells** and **`LIMIT` orders for buys**. Buy orders are submitted with a limit price set slightly above the current ask price to increase the likelihood of execution. This "slippage" buffer is configurable in `config.yaml` (`trading.buy_slippage_percent`) and defaults to 0.5%.
 -   **Time In Force (TIF):** All orders are submitted with an explicit Time In Force setting (default: `DAY`). The TIF setting is configurable in `config.yaml` (`trading.order_tif`).
--   **Performance Discrepancies:** Due to these constraints (e.g., rounding to whole shares, scaling, order execution logic), your portfolio's performance, P&L, and other metrics may somewhat differ from what you would achieve with manual trading.
+-   **Performance Discrepancies:** Due to these constraints (e.g., rounding to whole shares, scaling, order execution logic), your portfolio's performance, P&L, and other metrics may somewhat differ from the ideal.
 
 ## How It Works
 
@@ -81,8 +81,8 @@ Before getting started, ensure you have the following installed:
 Clone this repository to your local machine:
 
 ```bash
-git clone https://github.com/Zehnlabs-com/Zehnlabs-rebalancer.git
-cd Zehnlabs-rebalancer
+git clone https://github.com/zehnlabs-com/zehnlabs-rebalancer.git
+cd zehnlabs-rebalancer
 ```
 
 ### Step 2: Configure Environment Variables
