@@ -251,8 +251,17 @@ class IBKRRebalancer(BaseRebalancer):
 
         # Info warnings for existing symbols
         if skipped_existing:
-            symbols_info = [f"{s['trade'].symbol} ({s['allocation_pct']:.2f}%)" for s in skipped_existing]
-            info_msg = f"Portfolio optimization incomplete for: {', '.join(symbols_info)}"
+            skip_details = []
+            for s in skipped_existing:
+                trade = s['trade']
+                estimated_cost = trade.quantity * trade.price
+                shortfall = s['shortfall']
+                skip_details.append(
+                    f"{trade.symbol}: ${shortfall:.2f} short "
+                    f"to buy {trade.quantity} share{'s' if trade.quantity > 1 else ''} @ ${trade.price:.2f}"
+                )
+
+            info_msg = f"Insufficient funds to optimize portfolio: {', '.join(skip_details)}"
             warnings.append(info_msg)
             self.logger.info(info_msg)
 
