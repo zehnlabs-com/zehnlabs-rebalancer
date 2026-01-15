@@ -65,6 +65,21 @@ class IBKRConfig(BaseModel):
         le=5.0,
         description="Wait after placing order to allow processing"
     )
+
+    # Market data retry settings (handles bid=nan when IBKR hasn't populated data yet)
+    market_data_retry_delay_seconds: float = Field(
+        default=2.0,
+        ge=0.5,
+        le=10.0,
+        description="Wait time between retries when market data returns nan"
+    )
+    market_data_max_retries: int = Field(
+        default=10,
+        ge=1,
+        le=30,
+        description="Maximum number of retries when market data returns nan"
+    )
+
     ports: IBKRPortsConfig = Field(
         default_factory=IBKRPortsConfig,
         description="Port configuration for live and paper trading"

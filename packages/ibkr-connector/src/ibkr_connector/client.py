@@ -222,108 +222,155 @@ class IBKRClient(BrokerClient):
                 symbols_to_fetch.append(symbol)
         else:
             # Not using cache - fetch all symbols
-            symbols_to_fetch = symbols
+            symbols_to_fetch = list(symbols)  # Make a copy to avoid modifying original
 
         # If all prices were in cache, return immediately
         if not symbols_to_fetch:
             self.logger.info(f"All {len(symbols)} prices retrieved from cache")
             return prices
 
-        # Fetch remaining symbols from IBKR
+        # Fetch remaining symbols from IBKR with retry logic
         try:
-            # Create contracts for symbols not in cache
-            contracts = [Stock(symbol, 'SMART', 'USD') for symbol in symbols_to_fetch]
+            # Qualify contracts first (this doesn't need retry - it's a different issue)
+            symbol_to_contract = await self._qualify_contracts(symbols_to_fetch)
 
-            # Qualify contracts
-            qualified_contracts = []
-            symbol_to_contract = {}
+            # Fetch prices with retry logic for symbols that return invalid data (e.g., bid=nan)
+            fetched_prices = await self._fetch_prices_with_retry(symbol_to_contract)
 
-            failed_to_qualify = []
-            for contract in contracts:
-                try:
-                    qualified = await self.ib.qualifyContractsAsync(contract)
-                    if qualified:
-                        qualified_contract = qualified[0]
-                        qualified_contracts.append(qualified_contract)
-                        symbol_to_contract[qualified_contract.symbol] = qualified_contract
-                    else:
-                        failed_to_qualify.append(contract.symbol)
-                except Exception as e:
-                    self.logger.debug(f"Failed to qualify contract for {contract.symbol}: {e}")
-                    failed_to_qualify.append(contract.symbol)
-
-            if not qualified_contracts:
-                self.logger.error(f"Failed to qualify any contracts for symbols: {symbols_to_fetch}")
-                raise ValueError(f"Contract qualification failed for all symbols: {symbols_to_fetch}. Cannot retrieve market prices without valid contracts.")
-
-            # If some contracts failed to qualify, this is also a critical issue
-            if failed_to_qualify:
-                self.logger.error(f"Failed to qualify contracts for {len(failed_to_qualify)} symbols: {failed_to_qualify}")
-                raise ValueError(f"Contract qualification failed for symbols: {failed_to_qualify}. All symbols must be qualified to proceed with rebalancing.")
-
-            self.logger.info(f"Requesting batch prices for {len(qualified_contracts)} symbols...")
-
-            # Batch request all tickers at once
-            tickers = await self.ib.reqTickersAsync(*qualified_contracts)
-
-            # Extract prices from tickers
-            price_results = []
-            failed_symbols = []
-
-            for ticker in tickers:
-                symbol = ticker.contract.symbol
-
-                # Validate bid price - always required
-                if ticker.bid is None or ticker.bid <= 0 or math.isnan(ticker.bid):
-                    failed_symbols.append(symbol)
-                    self.logger.error(f"Missing bid price for {symbol} (bid={ticker.bid}). Cannot execute trades without valid bid price.")
-                    continue
-
-                # Handle ask price - use synthetic ask if market is closed (ask=-1 or invalid)
-                ask_price = ticker.ask
-                if ask_price is None or ask_price <= 0 or math.isnan(ask_price):
-                    # Market is closed - synthesize ask price by adding offset to bid
-                    synthetic_ask = ticker.bid + self.config.ibkr.synthetic_ask_offset_usd
-                    self.logger.warning(f"Market closed for {symbol} (ask={ticker.ask}). Using synthetic ask price: ${synthetic_ask:.2f} (bid + ${self.config.ibkr.synthetic_ask_offset_usd})")
-                    ask_price = synthetic_ask
-
-                # Extract valid prices (bid/ask are guaranteed valid at this point)
-                # For last/close, default to 0.0 if invalid (these are optional for display purposes)
-                last = ticker.last if (ticker.last and ticker.last > 0 and not math.isnan(ticker.last)) else 0.0
-                close = ticker.close if (ticker.close and ticker.close > 0 and not math.isnan(ticker.close)) else 0.0
-
-                # Create price object
-                contract_price = ContractPrice(
-                    symbol=symbol,
-                    bid=ticker.bid,
-                    ask=ask_price,  # Use synthetic ask if market is closed
-                    last=last,
-                    close=close
-                )
-
-                # Store in result list
+            # Add fetched prices to result and cache them
+            now = datetime.now()
+            for contract_price in fetched_prices:
                 prices.append(contract_price)
-
-                # Cache this price for future requests
-                self._price_cache[symbol] = CachedPrice(price=contract_price, cached_at=now)
-
-                # Log successful price retrieval
-                price_results.append(f"{symbol} -> ${ticker.ask:.2f}")
-
-            # Log all successful prices in one concise line
-            if price_results:
-                self.logger.info(f"Retrieved prices: {', '.join(price_results)}")
-
-            # If any symbols failed, this is a critical system issue - fail immediately
-            if failed_symbols:
-                self.logger.error(f"Batch pricing failed for {len(failed_symbols)} symbols: {failed_symbols}")
-                raise ValueError(f"Batch pricing API failed for symbols: {failed_symbols}. This indicates a system issue that must be resolved.")
+                self._price_cache[contract_price.symbol] = CachedPrice(price=contract_price, cached_at=now)
 
             return prices
 
         except Exception as e:
             self.logger.error(f"Batch price request failed: {e}")
             raise ValueError(f"Batch pricing system failure. This could be a serious system issue that may require manual resolution.")
+
+    async def _qualify_contracts(self, symbols: List[str]) -> Dict[str, Contract]:
+        """Qualify contracts for a list of symbols.
+
+        Returns:
+            Dict mapping symbol to qualified Contract
+
+        Raises:
+            ValueError if any contracts fail to qualify
+        """
+        contracts = [Stock(symbol, 'SMART', 'USD') for symbol in symbols]
+        symbol_to_contract = {}
+        failed_to_qualify = []
+
+        for contract in contracts:
+            try:
+                qualified = await self.ib.qualifyContractsAsync(contract)
+                if qualified:
+                    qualified_contract = qualified[0]
+                    symbol_to_contract[qualified_contract.symbol] = qualified_contract
+                else:
+                    failed_to_qualify.append(contract.symbol)
+            except Exception as e:
+                self.logger.debug(f"Failed to qualify contract for {contract.symbol}: {e}")
+                failed_to_qualify.append(contract.symbol)
+
+        if not symbol_to_contract:
+            self.logger.error(f"Failed to qualify any contracts for symbols: {symbols}")
+            raise ValueError(f"Contract qualification failed for all symbols: {symbols}. Cannot retrieve market prices without valid contracts.")
+
+        if failed_to_qualify:
+            self.logger.error(f"Failed to qualify contracts for {len(failed_to_qualify)} symbols: {failed_to_qualify}")
+            raise ValueError(f"Contract qualification failed for symbols: {failed_to_qualify}. All symbols must be qualified to proceed with rebalancing.")
+
+        return symbol_to_contract
+
+    async def _fetch_prices_with_retry(self, symbol_to_contract: Dict[str, Contract]) -> List[ContractPrice]:
+        """Fetch prices for qualified contracts with retry logic for bid=nan.
+
+        When IBKR returns bid=nan (data not yet populated), retries up to max_retries
+        times with a delay between attempts.
+
+        Returns:
+            List of ContractPrice objects for all symbols
+
+        Raises:
+            ValueError if any symbols still have bid=nan after all retries
+        """
+        retry_delay = self.config.ibkr.market_data_retry_delay_seconds
+        max_retries = self.config.ibkr.market_data_max_retries
+
+        # Track which symbols still need valid prices
+        pending_symbols = set(symbol_to_contract.keys())
+        successful_prices: Dict[str, ContractPrice] = {}
+
+        for attempt in range(max_retries + 1):  # +1 because first attempt is not a "retry"
+            if not pending_symbols:
+                break
+
+            # Get contracts for pending symbols
+            contracts_to_fetch = [symbol_to_contract[s] for s in pending_symbols]
+
+            if attempt == 0:
+                self.logger.info(f"Requesting batch prices for {len(contracts_to_fetch)} symbols...")
+            else:
+                self.logger.info(f"Retry {attempt}/{max_retries}: Requesting prices for {len(pending_symbols)} symbols with bid=nan: {sorted(pending_symbols)}")
+
+            # Fetch tickers
+            tickers = await self.ib.reqTickersAsync(*contracts_to_fetch)
+
+            # Process results
+            newly_successful = []
+            still_pending = []
+
+            for ticker in tickers:
+                symbol = ticker.contract.symbol
+
+                # Check if bid is valid
+                if ticker.bid is None or ticker.bid <= 0 or math.isnan(ticker.bid):
+                    still_pending.append(symbol)
+                    continue
+
+                # Bid is valid - process the price
+                ask_price = ticker.ask
+                if ask_price is None or ask_price <= 0 or math.isnan(ask_price):
+                    # Market is closed - synthesize ask price
+                    synthetic_ask = ticker.bid + self.config.ibkr.synthetic_ask_offset_usd
+                    self.logger.warning(f"Market closed for {symbol} (ask={ticker.ask}). Using synthetic ask price: ${synthetic_ask:.2f} (bid + ${self.config.ibkr.synthetic_ask_offset_usd})")
+                    ask_price = synthetic_ask
+
+                # Extract valid prices (bid/ask are guaranteed valid at this point)
+                last = ticker.last if (ticker.last and ticker.last > 0 and not math.isnan(ticker.last)) else 0.0
+                close = ticker.close if (ticker.close and ticker.close > 0 and not math.isnan(ticker.close)) else 0.0
+
+                contract_price = ContractPrice(
+                    symbol=symbol,
+                    bid=ticker.bid,
+                    ask=ask_price,
+                    last=last,
+                    close=close
+                )
+
+                successful_prices[symbol] = contract_price
+                newly_successful.append(f"{symbol} -> ${ask_price:.2f}")
+
+            # Log successful retrievals
+            if newly_successful:
+                self.logger.info(f"Retrieved prices: {', '.join(newly_successful)}")
+
+            # Update pending symbols
+            pending_symbols = set(still_pending)
+
+            # If there are still pending symbols and we have retries left, wait before next attempt
+            if pending_symbols and attempt < max_retries:
+                self.logger.info(f"Waiting {retry_delay}s before retry for symbols with bid=nan: {sorted(pending_symbols)}")
+                await asyncio.sleep(retry_delay)
+
+        # After all retries, check if any symbols still failed
+        if pending_symbols:
+            self.logger.error(f"Failed to get valid bid price for {len(pending_symbols)} symbols after {max_retries} retries: {sorted(pending_symbols)}")
+            raise ValueError(f"Batch pricing failed for symbols after {max_retries} retries: {sorted(pending_symbols)}. IBKR did not return valid bid prices.")
+
+        return list(successful_prices.values())
 
     async def place_order(self, account_id: str, symbol: str, quantity: int, order_type: str = 'MARKET', price: float = None) -> OrderResult:
         """Place an order"""

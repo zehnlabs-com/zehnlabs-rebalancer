@@ -44,6 +44,16 @@ ibkr:
   # Range: 0.1-5 seconds | Impact: Prevents premature order status checks
   order_placement_delay_seconds: 1.0
 
+  # --- Market Data Retry Settings ---
+  
+    # Wait time between retries when market data is invalid (e.g., bid=nan)
+  # Range: 0.5-10 seconds
+  market_data_retry_delay_seconds: 2.0
+
+  # Maximum number of retries when market data is invalid
+  # Range: 1-30
+  market_data_max_retries: 10
+
   # Internal container ports for IBKR Gateway connections
   # These match the Docker container's internal network (not exposed to host)
   ports:
