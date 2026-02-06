@@ -2,7 +2,9 @@
 
 import os
 import json
+import asyncio
 import logging
+from collections import defaultdict
 from datetime import datetime
 from typing import Optional, Callable
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -74,7 +76,7 @@ class SchedulerService:
 
     This service runs a scheduled job at the configured market open time (default 9:30 AM ET)
     on trading days (Mon-Fri, excluding NYSE holidays). It reads accounts from the scheduled
-    file and processes them sequentially, continuing if individual accounts fail.
+    file, groups them by strategy, and executes strategies in parallel.
 
     The container runs with TZ=America/New_York, so datetime.now() returns ET time.
     """
@@ -180,7 +182,7 @@ class SchedulerService:
         await self._process_scheduled_accounts()
 
     async def _process_scheduled_accounts(self):
-        """Process all scheduled accounts, continuing on individual failures."""
+        """Process all scheduled accounts, grouped by strategy for parallel execution."""
         try:
             # Read scheduled accounts
             with open(self.scheduled_file, 'r') as f:
@@ -193,20 +195,62 @@ class SchedulerService:
 
             self.logger.info(f"Processing {len(account_ids)} scheduled accounts")
 
-            results = []
+            # Group accounts by strategy (using defaultdict for cleaner grouping)
+            strategies = defaultdict(list)
+            skipped = []
             for account_id in account_ids:
-                try:
-                    result = await self._process_single_account(account_id)
-                    results.append({'account_id': account_id, 'success': True, 'result': result})
-                except Exception as e:
-                    self.logger.error(f"Scheduled rebalance failed for {account_id}: {e}")
-                    results.append({'account_id': account_id, 'success': False, 'error': str(e)})
-                    # Continue to next account
+                account = self.accounts_lookup(account_id)
+                if not account:
+                    self.logger.warning(f"Account {account_id} not found in configuration, skipping")
+                    skipped.append(account_id)
+                    continue
+                strategies[account['strategy_name']].append(account)
 
-            # Log summary
-            successful = sum(1 for r in results if r['success'])
-            failed = len(results) - successful
-            self.logger.info(f"Scheduled rebalance complete: {successful} successful, {failed} failed")
+            if not strategies:
+                self.logger.info("No valid accounts to process")
+                self._clear_scheduled_file()
+                return
+
+            # Log strategy breakdown
+            for strategy_name, accounts in strategies.items():
+                account_ids_str = ', '.join(acc['account_id'] for acc in accounts)
+                self.logger.info(f"Strategy '{strategy_name}': {len(accounts)} accounts ({account_ids_str})")
+
+            # Build event data
+            event_data = {
+                'exec': 'rebalance',
+                'source': 'scheduled',
+                'timestamp': datetime.now().isoformat()
+            }
+
+            # Execute all strategies in parallel (follows trading_executor asyncio.gather pattern)
+            tasks = [
+                self.strategy_executor.execute_strategy(strategy_name, accounts, event_data)
+                for strategy_name, accounts in strategies.items()
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results and log summary (follows strategy_executor logging pattern)
+            total_successful = 0
+            total_failed = 0
+            for (strategy_name, accounts), result in zip(strategies.items(), results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"Strategy {strategy_name} failed completely: {result}")
+                    total_failed += len(accounts)
+                elif result.get('status') == 'already_running':
+                    self.logger.warning(f"Strategy {strategy_name} was already running, skipped")
+                    total_failed += len(accounts)
+                else:
+                    account_results = result.get('results', [])
+                    successful = sum(1 for r in account_results if r.get('success', False))
+                    failed = len(account_results) - successful
+                    total_successful += successful
+                    total_failed += failed
+
+            self.logger.info(
+                f"Scheduled rebalance complete: {total_successful} successful, "
+                f"{total_failed} failed, {len(skipped)} skipped"
+            )
 
             # Clear the scheduled file after processing
             self._clear_scheduled_file()
@@ -216,40 +260,6 @@ class SchedulerService:
             self._clear_scheduled_file()
         except Exception as e:
             self.logger.error(f"Error processing scheduled accounts: {e}")
-
-    async def _process_single_account(self, account_id: str):
-        """
-        Process a single scheduled account.
-
-        Args:
-            account_id: The account ID to process
-
-        Returns:
-            The result from strategy_executor.execute_strategy
-
-        Raises:
-            ValueError: If the account is not found in configuration
-        """
-        account = self.accounts_lookup(account_id)
-        if not account:
-            raise ValueError(f"Account '{account_id}' not found in configuration")
-
-        strategy_name = account['strategy_name']
-        event_data = {
-            'exec': 'rebalance',
-            'source': 'scheduled',
-            'timestamp': datetime.now().isoformat()
-        }
-
-        self.logger.info(f"Executing scheduled rebalance for {account_id} (strategy: {strategy_name})")
-
-        result = await self.strategy_executor.execute_strategy(
-            strategy_name,
-            [account],
-            event_data
-        )
-
-        return result
 
     def _clear_scheduled_file(self):
         """Clear the scheduled file after processing."""
