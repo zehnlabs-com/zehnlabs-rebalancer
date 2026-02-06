@@ -180,6 +180,26 @@ service:
   manual_event_file_path: "/app/data/manual-rebalance/rebalance.json"
 
 # ============================================================================
+# Scheduler Configuration
+# ============================================================================
+# Controls scheduled rebalancing at market open. Accounts listed in the
+# scheduled file will be rebalanced at the configured time on trading days.
+# Used by: SchedulerService
+# ============================================================================
+scheduler:
+  # Enable/disable scheduled rebalancing
+  # Impact: When false, scheduled.json is ignored
+  enabled: true
+
+  # Market open time in HH:MM format (24-hour, ET timezone)
+  # Range: Valid time format | Impact: CRITICAL - When scheduled rebalances execute
+  market_open_time: "09:30"
+
+  # File path for scheduled accounts list (JSON array of account IDs)
+  # Impact: CRITICAL - Where the service looks for scheduled accounts
+  scheduled_file_path: "/app/data/market-open/scheduled.json"
+
+# ============================================================================
 # Executor Configuration
 # ============================================================================
 # Controls parallel execution of strategy rebalancing across accounts

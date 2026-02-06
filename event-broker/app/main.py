@@ -1,5 +1,5 @@
 """
-Enhanced Event Broker Service - Single Service Architecture
+Event Broker Service - Single Service Architecture
 
 This service subscribes to Ably strategy events and executes trades directly
 in parallel subprocesses for maximum performance.
@@ -14,6 +14,7 @@ from pathlib import Path
 from app_config import load_config
 from app.services.ably_service import AblyEventSubscriber
 from app.services.strategy_executor import StrategyExecutor
+from app.services.scheduler_service import SchedulerService
 
 # Setup logging
 logging.basicConfig(
@@ -40,7 +41,7 @@ for logger_name in ably_loggers:
     logger_instance.setLevel(logging.WARNING)
 
 class EventBrokerApp:
-    """Main application class for the Enhanced Event Broker Service"""
+    """Main application class for the Event Broker Service"""
 
     def __init__(self):
         from app_config import get_config
@@ -50,20 +51,27 @@ class EventBrokerApp:
             strategy_executor=self.strategy_executor,
             logger=logger
         )
+        self.scheduler_service = SchedulerService(
+            strategy_executor=self.strategy_executor,
+            accounts_lookup=self._find_account_by_id,
+            logger=logger
+        )
         self.running = False
         self.manual_event_file = self.config.service.manual_event_file_path
 
     async def start(self):
-        """Start the Enhanced Event Broker Service"""
+        """Start the Event Broker Service"""
         try:
-            logger.info("Starting Enhanced Event Broker Service...")
+            logger.info("Starting Event Broker Service...")
 
             # Start the Ably event subscriber
             await self.ably_subscriber.start()
 
-            self.running = True
-            logger.info("Enhanced Event Broker Service started successfully")
+            # Start the scheduler service
+            await self.scheduler_service.start()
 
+            self.running = True
+            logger.info("Event Broker Service started successfully")
             # Start manual event file watcher and keep the service running
             await asyncio.gather(
                 self._run_forever(),
@@ -71,28 +79,31 @@ class EventBrokerApp:
             )
 
         except Exception as e:
-            logger.error(f"Failed to start Enhanced Event Broker Service: {e}")
+            logger.error(f"Failed to start Event Broker Service: {e}")
             raise
 
     async def stop(self):
-        """Stop the Enhanced Event Broker Service"""
+        """Stop the Event Broker Service"""
         if not self.running:
             return
 
-        logger.info("Stopping Enhanced Event Broker Service...")
+        logger.info("Stopping Event Broker Service...")
         self.running = False
 
         try:
+            # Stop scheduler service
+            await self.scheduler_service.stop()
+
             # Stop Ably subscriber
             await self.ably_subscriber.stop()
 
             # Cleanup strategy executor
             self.strategy_executor.cleanup()
 
-            logger.info("Enhanced Event Broker Service stopped successfully")
+            logger.info("Event Broker Service stopped successfully")
 
         except Exception as e:
-            logger.error(f"Error stopping Enhanced Event Broker Service: {e}")
+            logger.error(f"Error stopping Event Broker Service: {e}")
 
     async def _run_forever(self):
         """Keep the service running and handle graceful shutdown"""
@@ -203,7 +214,8 @@ class EventBrokerApp:
             "service_type": "enhanced_event_broker",
             "version": "2.0.0",
             "active_strategies": len(self.strategy_executor.active_strategies) if self.strategy_executor else 0,
-            "manual_event_file": self.manual_event_file
+            "manual_event_file": self.manual_event_file,
+            "scheduler_next_run": self.scheduler_service.get_next_run_time() if self.scheduler_service else None
         }
 
 # Global app instance

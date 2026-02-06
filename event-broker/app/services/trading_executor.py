@@ -11,6 +11,8 @@ from typing import List
 from contextlib import asynccontextmanager
 from app.models import AccountConfig, AccountExecutionResult, StrategyExecutionResult
 from app.services.pdt_protection_service import PDTProtectionService
+from app.services.scheduler_service import add_account_to_schedule
+from app_config import get_config
 
 def execute_strategy_batch(strategy_name: str, accounts: List[dict], event_data: dict, env: dict) -> dict:
     """
@@ -107,8 +109,6 @@ async def process_single_account(account: dict, client_id: int, event_data: dict
 
 async def _check_pdt_protection(account_config: AccountConfig, event_data: dict, logger):
     """Check PDT protection rules before execution"""
-    from app.services.pdt_protection_service import PDTProtectionService
-    
     if not account_config.pdt_protection_enabled or event_data.get('exec') != 'rebalance':
         return
 
@@ -116,11 +116,23 @@ async def _check_pdt_protection(account_config: AccountConfig, event_data: dict,
     check_result = pdt_service.is_execution_allowed(account_config.account_id)
 
     if not check_result.allowed:
-        error_msg = (
-            f"PDT Protection: Account {account_config.account_id} was already rebalanced earlier today "
-            f"so it was skipped to protect against PDT. "
-            f"You can manually rebalance after {check_result.next_allowed_time}."
-        )
+        # Auto-schedule for next market open if scheduler is enabled
+        config = get_config()
+        auto_scheduled = False
+        if config.scheduler.enabled:
+            auto_scheduled = add_account_to_schedule(account_config.account_id, logger)
+
+        if auto_scheduled:
+            error_msg = (
+                f"PDT Protection: Account {account_config.account_id} was already rebalanced today. "
+                f"Auto-scheduled for next market open ({config.scheduler.market_open_time} ET)."
+            )
+        else:
+            error_msg = (
+                f"PDT Protection: Account {account_config.account_id} was already rebalanced earlier today "
+                f"so it was skipped to protect against PDT. "
+                f"You can manually rebalance after {check_result.next_allowed_time}."
+            )
         logger.warning(error_msg)
         raise Exception(error_msg)
 
@@ -134,8 +146,6 @@ def _create_rebalancer(account_config: AccountConfig, broker_client, logger):
 
 async def _execute_live_rebalance(rebalancer, account_config: AccountConfig, logger) -> dict:
     """Execute live rebalance with real trades"""
-    from app.services.pdt_protection_service import PDTProtectionService
-    
     logger.info("Executing LIVE rebalance")
     result = await rebalancer.rebalance_account(account_config)
 

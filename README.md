@@ -131,7 +131,7 @@ accounts:
 -   `type`: `live` or `paper`. The rebalancer will only process accounts whose `type` matches the `TRADING_MODE` set in your `.env` file.
 -   `strategy_name`: The name of the allocation strategy you are subscribed to.
 -   `cash_reserve_percent`: Percentage of equity to reserve as a buffer for quickly changing prices (0-100). Default is 0%.
--   `pdt_protection_enabled`: If `true`, the system will rebalance at most once per trading day to help avoid Pattern Day Trader (PDT) rule violations. Next allowed rebalance is at 9:30 AM ET the following day (configurable in `config.yaml`).
+-   `pdt_protection_enabled`: If `true`, the system will rebalance at most once per trading day to help avoid Pattern Day Trader (PDT) rule violations. When an account is blocked by PDT protection, it is automatically scheduled for the next market open (see [Scheduled Rebalancing](#scheduled-rebalancing)).
 -   `replacement_set` (optional): If you want to trade equities different from your strategy allocations (e.g., IRA accounts with ETF restrictions), configure replacement sets in `replacement-sets.yaml` and reference them here.
 
 ### Additional Configuration Files
@@ -210,6 +210,50 @@ From the project's root directory, run the script with the following parameters:
 ```
 
 Replace `YOUR_ACCOUNT_ID` with your actual IBKR account number (e.g., `U1234567`) that is configured in `accounts.yaml`.
+
+---
+
+## Scheduled Rebalancing
+
+You can schedule accounts to be automatically rebalanced at market open (9:30 AM ET) on trading days. This is useful when you miss an automatic rebalance for any reason and want to schedule the rebalance at market open. Also if an account could not be rebalanced automatically due to PDT protection, it is automatically scheduled for next market open.
+
+### How It Works
+
+- The scheduler runs at 9:30 AM ET every weekday (configurable in `config.yaml`)
+- NYSE holidays and weekends are automatically skipped
+- Accounts are processed sequentially; if one fails, others continue
+- The scheduled accounts list is cleared after processing
+
+### Managing Scheduled Accounts
+
+Use the `schedule.sh` tool to manage which accounts are scheduled for market-open rebalancing:
+
+**List scheduled accounts:**
+```bash
+./tools/schedule.sh list
+```
+
+**Add an account to the schedule:**
+```bash
+./tools/schedule.sh add U12345678
+```
+
+**Remove an account from the schedule:**
+```bash
+./tools/schedule.sh remove U12345678
+```
+
+**Clear all scheduled accounts:**
+```bash
+./tools/schedule.sh clear
+```
+
+### Notes
+
+- Account IDs must be configured in `accounts.yaml`
+- Changes take effect immediately (no restart required)
+- The schedule persists across container restarts
+- Requires `jq` to be installed (use WSL on Windows)
 
 ---
 

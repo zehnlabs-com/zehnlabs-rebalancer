@@ -122,6 +122,7 @@ class NotificationService:
 
         # Detect PDT Protection errors for special handling
         is_pdt_error = error and "PDT Protection" in error
+        is_auto_scheduled = error and "Auto-scheduled" in error
 
         # Build message body
         message_lines = [
@@ -137,8 +138,12 @@ class NotificationService:
 
         # Use different title and emoji for PDT protection
         if is_pdt_error:
-            title = f"🛡️ PDT Protection Active"
-            tags = ["shield", "warning"]
+            if is_auto_scheduled:
+                title = f"🗓️ PDT - Auto-Scheduled"
+                tags = ["calendar", "shield"]
+            else:
+                title = f"🛡️ PDT Protection Active"
+                tags = ["shield", "warning"]
         else:
             title = f"❌ {operation.replace('-', ' ').title()} Failed"
             tags = ["x"]

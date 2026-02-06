@@ -225,6 +225,33 @@ class ServiceConfig(BaseModel):
     )
 
 
+class SchedulerConfig(BaseModel):
+    """Scheduler configuration for market-open rebalancing."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable/disable scheduled rebalancing"
+    )
+    market_open_time: str = Field(
+        default="09:30",
+        description="Market open time in HH:MM format (24-hour, ET timezone)"
+    )
+    scheduled_file_path: str = Field(
+        default="/app/data/market-open/scheduled.json",
+        description="File path for scheduled accounts list"
+    )
+
+    @field_validator("market_open_time")
+    @classmethod
+    def validate_time_format(cls, v: str) -> str:
+        """Validate time format is HH:MM where HH is 00-23 and MM is 00-59."""
+        if not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', v):
+            raise ValueError(
+                f"Invalid time format '{v}'. Must be HH:MM where HH is 00-23 and MM is 00-59"
+            )
+        return v
+
+
 class ExecutorConfig(BaseModel):
     """Executor configuration."""
 
@@ -269,6 +296,10 @@ class AppConfig(BaseModel):
     service: ServiceConfig = Field(
         default_factory=ServiceConfig,
         description="Service configuration"
+    )
+    scheduler: SchedulerConfig = Field(
+        default_factory=SchedulerConfig,
+        description="Scheduler configuration for market-open rebalancing"
     )
     executor: ExecutorConfig = Field(
         default_factory=ExecutorConfig,
