@@ -4,7 +4,32 @@ import os
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+import re
 import aiohttp
+
+
+def _mask_account_id(account_id: str) -> str:
+    """Mask the first three digits of an account ID (e.g., U123456 -> U***456)."""
+    match = re.search(r'\d{3}', account_id)
+    if not match:
+        return account_id
+    start, end = match.span()
+    return account_id[:start] + '***' + account_id[end:]
+
+
+def _format_strategy_name(strategy_slug: str) -> str:
+    """Convert a strategy slug to its display name (e.g., etf-blend-301-20 -> ETF Blend 301-20)."""
+    parts = []
+    for part in strategy_slug.split('-'):
+        if part.isdigit() and parts and parts[-1].isdigit():
+            parts.append(f'{parts.pop()}-{part}')
+        elif part.isdigit():
+            parts.append(part)
+        elif len(part) <= 4:  # ponytail: acronym heuristic (etf -> ETF); replace with explicit name map if varied strategies appear
+            parts.append(part.upper())
+        else:
+            parts.append(part.title())
+    return ' '.join(parts)
 
 
 class NotificationService:
@@ -71,8 +96,8 @@ class NotificationService:
 
         # Build message body
         message_lines = [
-            f"Account: {account_id}",
-            f"Strategy: {strategy_name}",
+            f"Account: {_mask_account_id(account_id)}",
+            f"Strategy: {_format_strategy_name(strategy_name)}",
             f"Operation: {operation}",
             f"Time: {time_str}",
             ""
@@ -126,8 +151,8 @@ class NotificationService:
 
         # Build message body
         message_lines = [
-            f"Account: {account_id}",
-            f"Strategy: {strategy_name}",
+            f"Account: {_mask_account_id(account_id)}",
+            f"Strategy: {_format_strategy_name(strategy_name)}",
             f"Operation: {operation}",
             f"Time: {time_str}",
             "",
@@ -179,8 +204,8 @@ class NotificationService:
             self.logger.info(f"Sending {len(warnings)} warning(s) for {account_id}")
 
             message_lines = [
-                f"Account: {account_id}",
-                f"Strategy: {strategy_name}",
+                f"Account: {_mask_account_id(account_id)}",
+                f"Strategy: {_format_strategy_name(strategy_name)}",
                 f"Operation: {operation}",
                 "",
                 "Warnings:",
