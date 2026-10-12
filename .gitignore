@@ -63,3 +63,6 @@ data/
 
 # Generated documentation
 working-docs/
+
+# Machine-local agent context - never commit (may contain private paths)
+AGENTS.local.md

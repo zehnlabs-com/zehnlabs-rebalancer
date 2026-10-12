@@ -452,10 +452,8 @@ VNC_PORT=5901
 - **Strategy Still Running**: The system prevents duplicate strategy execution. Wait for completion before triggering again.
 - **Account Configuration**: Changes to accounts.yaml require restart - docker-compose restart won't reload the config without a container restart.
 
-## Project knowledge base
+## Local context
 
-Verified architecture notes for this system live in the wiki at
-`C:\Users\mharo\source\faisal-second-brain`. Before changing behaviour here, read `index.md`,
-then the page for this repo: it records verified behaviour with evidence markers
-(`^[code: file:line]` / `^[cfg: file]` / `^[doc: file]`), known documentation-vs-code drift, and
-open questions. Repo docs are hints — code beats docs beats memory.
+If `AGENTS.local.md` exists alongside this file, read it and follow it. It holds machine-local
+context (private paths, personal tooling, local knowledge-base notes) that is deliberately not
+committed to this repository.
