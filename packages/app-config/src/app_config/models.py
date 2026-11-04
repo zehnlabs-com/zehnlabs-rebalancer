@@ -5,6 +5,9 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+DEFAULT_ALLOCATIONS_BASE_URL = "https://workers.fintech.zehnlabs.com/api/v1/strategies"
+
+
 class IBKRPortsConfig(BaseModel):
     """IBKR port configuration."""
 
@@ -266,6 +269,12 @@ class ExecutorConfig(BaseModel):
 class APIConfig(BaseModel):
     """API configuration."""
 
+    rebalance_auth_timeout_seconds: int = Field(
+        default=10,
+        ge=1,
+        le=120,
+        description="Total startup timeout for retrieving the shared read-only Ably key"
+    )
     allocation_timeout_seconds: int = Field(
         default=30,
         ge=5,

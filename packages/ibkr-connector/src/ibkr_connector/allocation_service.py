@@ -6,7 +6,7 @@ import aiohttp
 import logging
 from typing import List, Optional
 from broker_connector_base import AllocationItem, AccountConfig
-from app_config import get_config
+from app_config import DEFAULT_ALLOCATIONS_BASE_URL, get_config
 
 class AllocationService:
     """Service for fetching target allocations from the API"""
@@ -14,7 +14,7 @@ class AllocationService:
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.config = get_config()
         self.logger = logger or logging.getLogger(__name__)
-        self.base_url = os.getenv('ALLOCATIONS_BASE_URL', 'https://fintech.zehnlabs.com/api')
+        self.base_url = os.getenv('ALLOCATIONS_BASE_URL', DEFAULT_ALLOCATIONS_BASE_URL).rstrip('/')
         self.api_key = os.getenv('ALLOCATIONS_API_KEY')
 
     async def get_allocations(self, account_config: AccountConfig) -> List[AllocationItem]:

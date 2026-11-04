@@ -5,8 +5,11 @@ import json
 import yaml
 import asyncio
 import logging
+import aiohttp
+from urllib.parse import urlsplit, urlunsplit
 from typing import Dict, List, Optional, Any
 from ably import AblyRealtime
+from app_config import DEFAULT_ALLOCATIONS_BASE_URL, get_config
 
 class AblyEventSubscriber:
     """Subscribes to Ably channels and routes to strategy executor"""
@@ -16,14 +19,15 @@ class AblyEventSubscriber:
         self.strategy_executor = strategy_executor
         self.strategies = {}  # strategy_name -> List[accounts]
         self.ably = None
-        self.api_key = os.getenv('REALTIME_API_KEY')
+        self.config = get_config()
+        self.zehnlabs_api_key = os.getenv('ALLOCATIONS_API_KEY')
+        self.allocations_base_url = os.getenv('ALLOCATIONS_BASE_URL', DEFAULT_ALLOCATIONS_BASE_URL)
+        self.api_key: Optional[str] = None
 
     async def start(self):
         """Start Ably subscription"""
 
-        if not self.api_key:
-            self.logger.error("No REALTIME_API_KEY configured")
-            return
+        self.api_key = await self._fetch_ably_key()
 
         # Load and group accounts by strategy
         self._load_accounts()
@@ -36,6 +40,58 @@ class AblyEventSubscriber:
         await self._subscribe_to_strategies()
 
         self.logger.info(f"Started Ably Event Subscriber for {len(self.strategies)} strategies")
+
+    def _rebalance_auth_url(self) -> str:
+        """The allocation base ends in /strategies; authentication uses its sibling route."""
+        base = self.allocations_base_url
+        try:
+            parts = urlsplit(base)
+            path = parts.path.rstrip('/')
+            if (not base or any(char.isspace() for char in base) or
+                parts.scheme not in ('https', 'http') or not parts.hostname or
+                parts.username is not None or parts.password is not None or
+                parts.query or parts.fragment or not path.endswith('/strategies')):
+                raise ValueError
+            parts.port  # Validate an explicitly configured port.
+        except ValueError:
+            raise ValueError(
+                "ALLOCATIONS_BASE_URL must be an HTTP(S) URL ending in /strategies, "
+                "without credentials, query parameters, or a fragment"
+            ) from None
+        return urlunsplit((parts.scheme, parts.netloc, path[:-len('/strategies')] + '/rebalance-auth', '', ''))
+
+    async def _fetch_ably_key(self) -> str:
+        """Fetch once per process startup; SDK reconnects retain the returned app key."""
+        if not self.zehnlabs_api_key or not self.zehnlabs_api_key.strip():
+            raise ValueError("ALLOCATIONS_API_KEY is required. Obtain your Zehnlabs key with /api in Telegram.")
+
+        url = self._rebalance_auth_url()
+        timeout = aiohttp.ClientTimeout(total=self.config.api.rebalance_auth_timeout_seconds)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    headers={'X-API-Key': self.zehnlabs_api_key},
+                    timeout=timeout,
+                    allow_redirects=False
+                ) as response:
+                    if response.status == 401:
+                        raise RuntimeError("Zehnlabs API key rejected. Check ALLOCATIONS_API_KEY; use /api regen if lost.")
+                    if response.status == 403:
+                        raise RuntimeError("Zehnlabs API access is not eligible. Check your subscription with /me in Telegram.")
+                    if response.status != 200:
+                        raise RuntimeError(f"Zehnlabs realtime startup failed (HTTP {response.status}). Try again later.")
+                    data = await response.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            # Response bodies and transport errors can contain credentials; keep them out of logs.
+            raise RuntimeError("Unable to retrieve the Ably key from Zehnlabs. Check API availability and try again.") from None
+
+        key = data.get('ablyApiKey') if isinstance(data, dict) else None
+        if (not isinstance(data, dict) or data.get('status') != 'success' or
+            not isinstance(key, str) or len(key.split(':')) != 2 or
+            not all(key.split(':')) or any(char.isspace() for char in key)):
+            raise RuntimeError("Zehnlabs returned an invalid realtime authentication response.")
+        return key
 
     def _load_accounts(self):
         """Load accounts.yaml and group by strategy"""

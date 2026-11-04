@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ProcessPoolExecutor
-from app_config import get_config
+from app_config import DEFAULT_ALLOCATIONS_BASE_URL, get_config
 from .notification_service import NotificationService
 
 class StrategyExecutor:
@@ -86,7 +86,7 @@ class StrategyExecutor:
         env_vars = {
             'TRADING_MODE': os.getenv('TRADING_MODE', 'paper'),
             'IB_HOST': os.getenv('IB_HOST', 'ibkr-gateway'),
-            'ALLOCATIONS_BASE_URL': os.getenv('ALLOCATIONS_BASE_URL', 'https://fintech.zehnlabs.com/api'),
+            'ALLOCATIONS_BASE_URL': os.getenv('ALLOCATIONS_BASE_URL', DEFAULT_ALLOCATIONS_BASE_URL),
             'ALLOCATIONS_API_KEY': os.getenv('ALLOCATIONS_API_KEY', ''),
             'LOG_LEVEL': os.getenv('LOG_LEVEL', 'INFO'),
             'USER_NOTIFICATIONS_ENABLED': os.getenv('USER_NOTIFICATIONS_ENABLED', 'false'),

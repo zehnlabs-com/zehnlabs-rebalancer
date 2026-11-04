@@ -214,9 +214,13 @@ executor:
 # API Configuration
 # ============================================================================
 # Settings for external API calls (allocation data, etc.)
-# Used by: AllocationService
+# Used by: AllocationService, AblyEventSubscriber
 # ============================================================================
 api:
+  # Total startup request timeout for the shared read-only Ably key
+  # Range: 1-120 seconds | Default: 10 seconds
+  rebalance_auth_timeout_seconds: 10
+
   # Timeout for HTTP requests to allocation API
   # Range: 5-120 seconds | Impact: Prevents hung HTTP requests
   allocation_timeout_seconds: 30

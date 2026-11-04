@@ -99,8 +99,8 @@ Now, edit the `.env` file with your specific details:
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `IB_USERNAME`                        | Your Interactive Brokers username.                                                                                                     |
 | `IB_PASSWORD`                        | Your Interactive Brokers password.                                                                                                     |
-| `ALLOCATIONS_API_KEY`                | API key for fetching strategy allocations. Obtain this by sending the `/me` command to the `#FintechZL_bot` on Telegram.                 |
-| `REBALANCE_EVENT_SUBSCRIPTION_API_KEY` | API key for receiving real-time rebalance events. Also obtained from the `#FintechZL_bot`.                                             |
+| `ALLOCATIONS_API_KEY`                | Your Zehnlabs API key. Send `/api` to `FintechZL_bot` in Telegram.                 |
+| `ALLOCATIONS_BASE_URL`               | Allocation API base, including `/strategies`. Default: `https://workers.fintech.zehnlabs.com/api/v1/strategies`.                            |
 | `TRADING_MODE`                       | Set to `live` for real money trading or `paper` for paper trading.                                                                       |
 | `AUTO_RESTART_TIME`                  | The time (in `America/New_York` timezone) when the IBKR Gateway will automatically restart. Defaults to `10:00 PM`. E.g., `02:00 PM`.      |
 | `VNC_PASSWORD`                       | A password for optional VNC access to the IBKR Gateway GUI. **Choose a strong password.**                                              |

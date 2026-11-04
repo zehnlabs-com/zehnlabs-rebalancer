@@ -239,6 +239,7 @@ executor:
 
 # API Configuration
 api:
+  rebalance_auth_timeout_seconds: 10
   allocation_timeout_seconds: 30
 ```
 
@@ -284,12 +285,13 @@ Set in `.env` file or docker-compose environment:
 **Required**:
 - `IB_USERNAME`: Interactive Brokers username
 - `IB_PASSWORD`: Interactive Brokers password
-- `REALTIME_API_KEY`: Ably API key for event subscription
-- `ALLOCATIONS_API_KEY`: API key for fetching strategy allocations
+- `ALLOCATIONS_API_KEY`: Unified Zehnlabs key from Telegram `/api`, used for allocations and startup `/rebalance-auth`. Copy/store it safely; `/api regen` replaces a lost key and `/api revoke` invalidates it. `/me` reports account/subscription details only.
+
+The subscriber fetches the shared read-only Ably key once at startup and passes it directly to the existing SDK. SDK reconnects retain that in-memory key. Subscribers configure no separate Ably key. See `docs/security-migration.md` for installation, container recreation, startup errors, and manual Ably rotation.
 
 **Important**:
 - `TRADING_MODE`: "paper" or "live" (controls which accounts are active and which IBKR port is used)
-- `ALLOCATIONS_BASE_URL`: API endpoint to fetch strategy allocations
+- `ALLOCATIONS_BASE_URL`: Allocation API base ending in `/strategies`; startup authentication uses the sibling `/rebalance-auth` route. Default: `https://workers.fintech.zehnlabs.com/api/v1/strategies`.
 
 **Optional**:
 - `LOG_LEVEL`: INFO (default), DEBUG, WARNING, ERROR
