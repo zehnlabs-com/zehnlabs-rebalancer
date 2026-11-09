@@ -457,8 +457,7 @@ class IBKRClient(BrokerClient):
             open_orders = []
 
             for trade in trades:
-                if (trade.order.account == account_id and
-                    trade.orderStatus.status not in ['Filled', 'Cancelled']):
+                if trade.order.account == account_id and trade.isActive():
                     open_orders.append(OpenOrder(
                         order_id=str(trade.order.orderId),  # Convert int to string
                         symbol=trade.contract.symbol,

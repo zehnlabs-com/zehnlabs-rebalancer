@@ -14,7 +14,7 @@ setup(
         "broker-connector-base==1.0.0",
         "rebalance-calculator==1.0.0",
         "app-config==1.0.0",
-        "ib-async==2.0.1",
+        "ib-async==2.1.0",
         "pydantic==2.11.7",
         "aiohttp==3.12.15",
         "PyYAML==6.0.2",

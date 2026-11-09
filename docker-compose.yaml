@@ -1,7 +1,7 @@
 x-system-version: &system-version "2.0.0"
 
 volumes:
-  ib_data:
+  ib_settings:
 
 networks:
   ibkr-network:
@@ -9,7 +9,7 @@ networks:
 
 services:
   ibkr-gateway:
-    image: gnzsnz/ib-gateway:10.41.1c
+    image: gnzsnz/ib-gateway:10.51.1e@sha256:85975f493bcacc8341cb42e6946c460868d165e5f64d9924b1958c8f03e7bee4
     ports:
       - "127.0.0.1:${IB_LIVE_API_PORT:-4001}:4003"
       - "127.0.0.1:${IB_PAPER_API_PORT:-4002}:4004"
@@ -21,6 +21,7 @@ services:
       TWS_PASSWORD_PAPER: ${IB_PASSWORD}
       TWOFA_DEVICE: IB Key
       TRADING_MODE: ${TRADING_MODE:-paper}
+      TWS_SETTINGS_PATH: /home/ibgateway/tws_settings
       READ_ONLY_API: no
       BYPASS_WARNING: yes
       AUTO_RESTART_TIME: ${AUTO_RESTART_TIME:-10:00 PM}
@@ -31,7 +32,7 @@ services:
       TZ: America/New_York
       JAVA_HEAP_SIZE: 1024
     volumes:
-      - ib_data:/home/ibgateway
+      - ib_settings:/home/ibgateway/tws_settings
     networks:
       - ibkr-network
     logging:
