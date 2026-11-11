@@ -454,5 +454,18 @@ class RealSDKReconnectTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.wait_for(sub.ably.close(), 1)
 
 
+class ShutdownTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unsubscribes_and_closes_connection(self):
+        sub = subscriber()
+        sub.strategies = {"strategy-one": []}
+        channel = SimpleNamespace(unsubscribe=Mock())
+        sub.ably = SimpleNamespace(channels=SimpleNamespace(get=Mock(return_value=channel)), close=AsyncMock())
+
+        await sub.stop()
+
+        channel.unsubscribe.assert_called_once_with()
+        sub.ably.close.assert_awaited_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()

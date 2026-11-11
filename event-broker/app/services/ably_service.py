@@ -217,11 +217,11 @@ class AblyEventSubscriber:
                 # Unsubscribe from all channels
                 for strategy_name in self.strategies.keys():
                     channel = self.ably.channels.get(strategy_name)
-                    await channel.unsubscribe()
+                    channel.unsubscribe()
                     self.logger.info(f"Unsubscribed from strategy '{strategy_name}'")
 
                 # Close connection
-                self.ably.close()
+                await self.ably.close()
                 self.logger.info("Closed Ably connection")
 
             except Exception as e:
