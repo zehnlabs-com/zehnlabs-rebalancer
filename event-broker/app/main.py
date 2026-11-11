@@ -226,7 +226,7 @@ async def shutdown_handler(sig_name):
     logger.info(f"Received {sig_name} signal, initiating graceful shutdown...")
     await app.stop()
 
-def setup_signal_handlers():
+def setup_signal_handlers(shutdown_tasks: asyncio.TaskGroup):
     """Set up signal handlers for graceful shutdown"""
     def signal_handler(sig_num, frame):
         logger.info(f"Received signal {sig_num}")
@@ -238,7 +238,7 @@ def setup_signal_handlers():
             asyncio.set_event_loop(loop)
 
         # Schedule the shutdown
-        asyncio.create_task(shutdown_handler(signal.Signals(sig_num).name))
+        shutdown_tasks.create_task(shutdown_handler(signal.Signals(sig_num).name))
 
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -248,10 +248,11 @@ async def main():
     """Main entry point"""
     try:
         # Set up signal handlers
-        setup_signal_handlers()
+        async with asyncio.TaskGroup() as shutdown_tasks:
+            setup_signal_handlers(shutdown_tasks)
 
-        # Start the application
-        await app.start()
+            # Start the application
+            await app.start()
 
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")

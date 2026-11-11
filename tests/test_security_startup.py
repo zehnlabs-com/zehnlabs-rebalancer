@@ -250,6 +250,25 @@ class ExecutionPreservationTests(unittest.IsolatedAsyncioTestCase):
         app._watch_manual_events = AsyncMock()
         return app
 
+    async def test_main_waits_for_signal_shutdown(self):
+        main = self.main_module()
+        handlers = {}
+        finished = asyncio.Event()
+
+        async def start():
+            handlers[main.signal.SIGTERM](main.signal.SIGTERM, None)
+            await asyncio.sleep(0)
+
+        async def stop():
+            await asyncio.sleep(0.01)
+            finished.set()
+
+        with patch.object(main, "app", SimpleNamespace(start=start, stop=stop)), \
+             patch.object(main.signal, "signal", side_effect=handlers.__setitem__):
+            await main.main()
+
+        self.assertTrue(finished.is_set())
+
     async def test_startup_failure_does_not_start_scheduler_or_manual_watcher(self):
         app = self.make_app()
         app.ably_subscriber.start = AsyncMock(side_effect=RuntimeError("synthetic auth failure"))
