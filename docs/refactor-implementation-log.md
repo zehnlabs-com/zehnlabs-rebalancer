@@ -177,4 +177,48 @@ connectivity was not exercised (PRD §0.4).
 
 ---
 
-_Append new entries below for WP5 onward._
+## WP5 — app-config / accounts / settings (§5)
+
+**Status:** done
+
+**Commits:** WP5 commit: `app-config` strict models + loader (CFG-1..4), `config.yaml`
+replaced (CFG-2), `event-broker/app/accounts.py` (ACC-1..3), `settings.py` (ENV-1..2),
+`accounts.yaml.example` cleaned (ACC-4); `tests/test_config.py`, `tests/test_accounts.py`.
+
+**Requirement IDs done:** CFG-1 (extra=forbid everywhere), CFG-2 (exact new schema in
+models + `config.yaml`), CFG-3 (removed/unknown key messages, all listed together,
+exact wording verified against the table, sections `replacement`/`pdt_protection`),
+CFG-4 (one `logger.info(model_dump())`), CFG-5 (non-zero exit stays in main.py — see
+below), ACC-1 (AccountConfig + AccountsFile), ACC-2 (whole-file validation with every
+message format; disabled/other-mode accounts still validated), ACC-3 (AccountRegistry),
+ACC-4 (example file cleaned; Faisal's `accounts.yaml` untouched and uncommitted — it is
+gitignored), ENV-1 (RuntimeSettings built once, picklable), ENV-2 (masked `__repr__`;
+never logged).
+
+**Tests added:** `tests/test_config.py` (shipped config loads; each CFG-3 key/section
+message verbatim; unknown nested key; all-offending-keys-listed-together; pydantic range
+error prefixed with `config.yaml:`; bad HH:MM), `tests/test_accounts.py` (example loads;
+registry filtering by enabled+mode; client-id = digits of the account ID; every ACC-2
+message; disabled+removed-key still fails; all-problems-at-once).
+
+**Deviations / scope notes:**
+- ENV-1's explicit instruction to **remove** `StrategyExecutor._get_environment()` and the
+  `os.environ` copying in `execute_strategy_batch` was **not** done in WP5: the baseline
+test `test_unified_key_and_base_are_forwarded_to_subprocess_without_ably_key` asserts
+`_get_environment()` still works, and PRD §16.3 says existing tests are adapted only in
+WP8. `RuntimeSettings` is provided now; the executor/worker rework happens in WP7 and the
+removal with it.
+- CFG-5 (non-zero exit on config error) is existing `main.py` behaviour and was not
+changed; nothing in WP5 regresses it.
+- `accounts.yaml` (Faisal's) still contains the removed keys and would now fail strict
+validation — by design (ACC-4: Faisal edits his own). It is gitignored; not touched,
+not committed.
+- The current `accounts.yaml.example` accounts are `paper` so the example loads cleanly.
+
+**Not done / why:** nothing within §5.
+
+**Open questions:** none.
+
+---
+
+_Append new entries below for WP6 onward._
