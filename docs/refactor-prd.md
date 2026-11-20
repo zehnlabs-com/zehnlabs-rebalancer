@@ -1078,7 +1078,8 @@ of the account ID).
   symbols, cash $0–$200k): P1–P7 (§7.7). Buys are assumed to fill at their limit price.
 - Weight-0 target held: sold exactly `floor(held)`, never `held + 1`.
 - Missing price for a held symbol → `NoPriceError`; buy with no bid but an ask → bought.
-- `round_quantity` edge cases: `99.9999999999 → 99`, `100.0 → 100`, `0.9999 → 0`.
+- `round_quantity` edge cases: `99.9999999999 → 100` (within EPS of 100, so treated as floating-point noise),
+  `99.999999 → 99`, `100.0 → 100`, `0.9999 → 0`. (Corrected 2026-11-20; §7's formula was always authoritative.)
 
 **Targets and replacements (`tests/test_targets.py`)**: TGT-1..5 each; REP-2 each rule; Appendix A
 replacement examples; replacement applied after the 1% check (a strategy of 70% UVXY / 30% SPY
@@ -1159,8 +1160,8 @@ Do them in this order. WP3 and WP4 may run in parallel after WP2. Each work pack
 | WP4 | `ibkr-connector`: `IBKRConnection` | §9 | WP2 |
 | WP5 | `app-config` strict config; `accounts.py`; `settings.py` | §5 | WP1 |
 | WP6 | `allocations.py`, `market_clock.py`, `results.py`, `rebalance.py` | §8, §10.1 | WP3, WP4, WP5 |
-| WP7 | Executor, worker, scheduler, retry, notifications, run records, Ably task set, main/startup/heartbeat | §10.2–10.6, §11, §12, §13 | WP6 |
-| WP8 | Deletions, Docker/compose, docs, changelog, removal search, existing-test adaptation | §4.3, §13.3–13.4, §14, §15, §16.3–16.4 | WP7 |
+| WP7 | Executor, worker, scheduler, retry, notifications, run records, Ably task set, main/startup/heartbeat, **and the §16.3 adaptation of `tests/test_security_startup.py`** (WP7 rewrites the modules it tests, so WP7 adapts it to stay green) | §10.2–10.6, §11, §12, §13, §16.3 | WP6 |
+| WP8 | Deletions, Docker/compose, docs, changelog, removal search, final check | §4.3, §13.3–13.4, §14, §15, §16.4 | WP7 |
 
 ### 17.1 Per-package acceptance
 
