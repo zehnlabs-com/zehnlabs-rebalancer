@@ -221,4 +221,52 @@ not committed.
 
 ---
 
-_Append new entries below for WP6 onward._
+## WP6 — allocations, market clock, results, the account run (§8, §10.1)
+
+**Status:** done
+
+**Commits:** WP6 commit: `event-broker/app/allocations.py`, `market_clock.py`, `results.py`,
+`rebalance.py`; `tests/fakes.py` (`FakeAllocations` returns `list[RawAllocation]`;
+`FakeBrokerConnection` reflects sell proceeds in `account_state` and gains `cash_factor`);
+`tests/test_rebalance.py`.
+
+**Requirement IDs done:** ALC-1..3 (`AllocationsClient` async CM, one session, `x-api-key`;
+`ticker`/`symbol`+`allocation`, missing allocation → None; status-code-only errors, timeout /
+network error). CLK-1..2 (`MarketClock` on `get_calendar("XNYS")`, injectable `now()`, real
+session times incl. half-day closes, `next_scheduled_run` strictly-after-now at config open
+EE); preview ignores market hours (implemented at the caller). §8.1 steps 1–18 + RUN-1..4
+(`rebalance_account` never raises; own orders cancelled live; foreign orders →
+`FOREIGN_ORDERS`; NLV mismatch → `ACCOUNT_DATA_MISMATCH` live / warning preview; two-leg
+sells-then-buys; cash wait using the lower figure; positions_after = state0 − fills, never
+re-read; close always via `async with`; connection factory is the single broker map point).
+§8.2 (parse), §8.4 (`results.py`: RunOutcome, FailureReason with values == names,
+ExecutedOrder/PlannedOrderOut/NoteOut/AccountRunResult), §8.5 WAIT-1..3 (`_wait_for_orders`:
+empty/unknown status → WORKING; non-filled at quiet → ORDERS_FAILED; timeout → ORDERS_TIMED_OUT;
+never cancels).
+
+**Tests added:** `tests/test_rebalance.py` (11): full happy path (cancel → snapshot → sells →
+cash wait → fresh quotes → buys; cash 335.0, value 104026.45, cash_base 10995), preview places
+nothing and does not cancel (+ works when market closed), live market-closed never connects,
+foreign order stops before any order, cancel-not-confirmed fails before the snapshot, NLV
+mismatch fails live, sell rejected → ORDERS_FAILED + no buys + executed lists the fill, buy
+timeout → ORDERS_TIMED_OUT and no cancel on failure, cash lag uses the lower figure, unexpected
+exception → INTERNAL_ERROR (truncated to 300 chars) and never raised.
+
+**Deviations / notes:**
+- `RunDeps.settings` is included (per §8.1) but is not yet consumed by `rebalance_account`
+  (port/mode live in `IBKRConnection` via the factory); it is carried for WP7's worker wiring.
+- The `record` dict (REC-2) is built in the worker and attached to `AccountRunResult.record`
+  as the spec requires; the record **file writing and pruning** are WP7 (`run_records.py`).
+- `trimmed` in the record is derived from the BUY-3 warning note's listed symbols (no new
+  model surface added, per §0.2).
+- One internal `try:` (sold to scope the `async with` connection) was found dangling and
+  removed in favour of the module's `except ConnectionFailedError`; behaviour unchanged.
+
+**Not done / why:** nothing within §8/§10.1. Real allocations HTTP and IBKR wiring are
+WP7-worker concerns; tests use fakes (§0.4).
+
+**Open questions:** none.
+
+---
+
+_Append new entries below for WP7 onward._

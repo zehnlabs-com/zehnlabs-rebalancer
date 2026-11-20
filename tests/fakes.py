@@ -28,6 +28,7 @@ from broker_connector_base import (
     Side,
     WorkingOrder,
 )
+from rebalance_calculator import RawAllocation
 
 
 # --------------------------------------------------------------------------- #
@@ -78,8 +79,8 @@ class FakeClock:
 class FakeAllocations:
     """Serves raw allocations per strategy (PRD §8.2 / ALC-1).
 
-    Seed with `{strategy: {symbol: weight}}`. WP6 types the return value to the
-    `RawAllocation` model; the fake today returns the plain mapping.
+    Seed with `{strategy: {symbol: weight}}`; `fetch` returns the same shape as
+    `AllocationsClient.fetch` — a list of `RawAllocation`.
     """
 
     def __init__(self, data: dict[str, dict[str, float]] | None = None):
@@ -92,11 +93,11 @@ class FakeAllocations:
     async def __aexit__(self, *exc: Any) -> None:
         return None
 
-    async def fetch(self, strategy: str) -> dict[str, float]:
+    async def fetch(self, strategy: str) -> list[RawAllocation]:
         self.fetched.append(strategy)
         if strategy not in self.data:
             raise LookupError(f"no allocations for {strategy}")
-        return dict(self.data[strategy])
+        return [RawAllocation(symbol=s, weight=w) for s, w in self.data[strategy].items()]
 
 
 # --------------------------------------------------------------------------- #
@@ -132,6 +133,7 @@ class FakeBrokerConnection(BrokerConnection):
         fill: dict[str, _FillRule | tuple] | None = None,
         working: Sequence[WorkingOrder] = (),
         cancel_confirmed: bool = True,
+        cash_factor: float = 1.0,
     ):
         self.account_id = account_id
         self._state = state or AccountState(
@@ -143,6 +145,7 @@ class FakeBrokerConnection(BrokerConnection):
             self._fill[symbol] = rule if isinstance(rule, _FillRule) else _FillRule(*rule)
         self._working = list(working)  # own + foreign working orders
         self._cancel_confirmed = cancel_confirmed
+        self._cash_factor = cash_factor  # fraction of sell proceeds visible in cash
 
         self._orders: dict[str, OrderState] = {}  # handle -> order state
         self._next_handle = 0
@@ -164,7 +167,17 @@ class FakeBrokerConnection(BrokerConnection):
     # ---- reads ---------------------------------------------------------- #
     async def account_state(self) -> AccountState:
         self.account_state_calls += 1
-        return self._state
+        cash = self._state.cash
+        for st in self._orders.values():
+            if st.side == Side.SELL and st.status == OrderStatus.FILLED \
+                    and st.average_fill_price is not None:
+                cash += st.filled_quantity * st.average_fill_price * self._cash_factor
+        return AccountState(
+            account_id=self.account_id,
+            cash=cash,
+            net_liquidation=self._state.net_liquidation,
+            positions=self._state.positions,
+        )
 
     async def quotes(self, symbols: Collection[str]) -> dict[str, Quote]:
         return {s: self._quotes[s] for s in symbols if s in self._quotes}
