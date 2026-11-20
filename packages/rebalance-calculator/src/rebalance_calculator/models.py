@@ -7,17 +7,9 @@ and notification, but the plan/sell/buy models are internal to the planner.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple
 
-from pydantic import BaseModel, Field
-from broker_connector_base import Side, Trade
-
-
-# Legacy model (kept until its consumer `calculator.py` is removed in WP8).
-class TradeCalculationResult(BaseModel):
-    """Result of trade calculation with warnings"""
-    trades: List[Trade]
-    warnings: List[str] = Field(default_factory=list)
+from broker_connector_base import Side
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-x-system-version: &system-version "2.0.0"
+x-system-version: &system-version "3.0.0"
 
 volumes:
   ib_settings:
@@ -61,7 +61,6 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./accounts.yaml:/app/accounts.yaml:ro
-      - ./replacement-sets.yaml:/app/replacement-sets.yaml:ro
       - ./data:/app/data
     networks:
       - ibkr-network

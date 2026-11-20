@@ -234,7 +234,7 @@ class EventBrokerApp:
         return {
             **ably_status,
             "service_type": "enhanced_event_broker",
-            "version": "2.0.0",
+            "version": "3.0.0",
             "active_strategies": active,
             "manual_event_file": self.manual_event_file,
             "scheduler_next_run": self.scheduler_service.get_next_run_time()

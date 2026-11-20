@@ -26,10 +26,11 @@ Before using this software, please understand the following limitations:
     -   **US Securities Snapshot and Futures Value Bundle (NP,L1):** $10.00/month (waived if monthly commissions reach $30).
     -   **Cboe One Add-On Bundle (NP,L1):** $1.00/month (waived if monthly commissions reach $5).
 -   **Fractional Shares:** The IBKR TWS API **does not support trading fractional shares**. Consequently, this tool cannot trade them.
+-   **Account Types:** Designed for margin and IRA accounts. In a cash account, sale proceeds may not be spendable until settlement, so buys can be rejected; the account is then retried at the next open.
 -   **Dividend Reinvestment:** Due to the lack of fractional share support, you should **disable automatic dividend reinvestment** in your IBKR account settings to prevent the creation of small, untradeable positions.
--   **Order Types:** To ensure trades are filled while protecting against unfavorable prices, the system uses **`MARKET` orders for sells** and **`LIMIT` orders for buys**. Buy orders are submitted with a limit price set slightly above the current ask price to increase the likelihood of execution. This "slippage" buffer is configurable in `config.yaml` (`trading.buy_slippage_percent`) and defaults to 0.5%.
--   **Time In Force (TIF):** All orders are submitted with an explicit Time In Force setting (default: `DAY`). The TIF setting is configurable in `config.yaml` (`trading.order_tif`).
--   **Performance Discrepancies:** Due to these constraints (e.g., rounding to whole shares, scaling, order execution logic), your portfolio's performance, P&L, and other metrics may somewhat differ from the ideal.
+-   **Order Types:** To ensure trades are filled while protecting against unfavorable prices, the system uses **`MARKET` orders for sells** and **`LIMIT` orders for buys**. Buy orders are submitted with a limit price set slightly above the current ask price to increase the likelihood of execution. This "slippage" buffer is configurable in `config.yaml` (`trading.buy_slippage_percent`).
+-   **Time In Force (TIF):** All orders are **`DAY`** orders.
+-   **Performance Discrepancies:** Due to these constraints (e.g., rounding to whole shares), your portfolio's performance, P&L, and other metrics may somewhat differ from the ideal.
 
 ## How It Works
 
@@ -42,17 +43,15 @@ To ensure cash from sales is available for purchases, the rebalancing process oc
 1.  **Sell Phase:** The system first identifies and sells any positions that must be sold according to the latest allocations. This liquidates unnecessary assets and increases your available cash balance.
 2.  **Buy Phase:** After the sell phase, the system calculates the required purchases to meet the target allocations. It uses your available cash (including proceeds from the sell phase) to execute these buys.
 
-### Cash Usage Maximization
+### How a Rebalance Works
 
-The rebalancer aims to deploy as much of your available cash as possible into your target investments.
+For each enabled account, one run moves the portfolio toward its strategy's target weights, using whole shares only:
 
--   After calculating the ideal number of shares to buy for each asset, it checks if there is enough cash to cover all purchases.
--   If cash is limited, it scales down the buy orders proportionally to fit within your available balance.
--   If there is surplus cash, it intelligently scales up the buy orders to use the extra funds, ensuring your portfolio stays as fully invested as possible while respecting the target allocation ratios.
-
-### Minimum Purchase Quantity
-
-The system ensures that **at least one share is owned** for each symbol in the target allocations. This guarantees that all assets in your target allocation are represented in your portfolio, even if the ideal allocation would have been a fractional share.
+1. Targets are fetched from the allocations API, validated, and scaled to sum to exactly 100%, then replacements are applied if the account uses one ([Replacement Sets](#replacement-sets)). An empty target list means "sell everything".
+2. Shares are always rounded **down** to whole numbers. A target worth less than one share is simply not bought — there is no minimum purchase of one share.
+3. Sells are placed first (as **market** orders); once they fill, the updated cash is read and buys (as **limit** orders, sized from the ask plus a small slippage buffer) are placed.
+4. A **cash reserve** holds back `trading.minimum_cash_reserve_percent` of the account's total value (default 0.25%). Buys never spend below that reserve. If cash is short, the **lowest-weight** buys are trimmed first, share by share.
+5. At the start of each live run the app cancels any of *its own* working orders. If it finds *foreign* working orders (placed manually in TWS or the mobile app), the run stops and warns instead of trading.
 
 ---
 
@@ -133,28 +132,21 @@ accounts:
     type: paper            # Must match TRADING_MODE in .env
     enabled: true
     strategy_name: etf-blend-103-20 # The allocation strategy to follow
-    cash_reserve_percent: 0.0 # Percentage of equity to reserve as buffer (0-100)
-    pdt_protection_enabled: true # Prevents more than one rebalance per day
+    # replacement_set: ira  # optional: use IRA-safe replacements
 ```
 
 -   `account_id`: Your IBKR account number.
 -   `type`: `live` or `paper`. The rebalancer will only process accounts whose `type` matches the `TRADING_MODE` set in your `.env` file.
 -   `strategy_name`: The name of the allocation strategy you are subscribed to.
--   `cash_reserve_percent`: Percentage of equity to reserve as a buffer for quickly changing prices (0-100). Default is 0%.
--   `pdt_protection_enabled`: If `true`, the system will rebalance at most once per trading day to help avoid Pattern Day Trader (PDT) rule violations. When an account is blocked by PDT protection, it is automatically scheduled for the next market open (see [Scheduled Rebalancing](#scheduled-rebalancing)).
--   `replacement_set` (optional): If you want to trade equities different from your strategy allocations (e.g., IRA accounts with ETF restrictions), configure replacement sets in `replacement-sets.yaml` and reference them here.
+-   `replacement_set` (optional): The name of a built-in replacement set (today only `ira`) to use when an account cannot hold certain ETFs. See [Replacement Sets](#replacement-sets).
 
 ### Additional Configuration Files
 
-**`config.yaml`** - Advanced trading parameters (slippage, thresholds, timeouts, etc.)
+**`config.yaml`** - Advanced trading parameters (slippage, cash reserve, timeouts, etc.)
 -   Most users do not need to modify this file
 -   Advanced users can optimize these settings as needed
 -   The file contains inline documentation for all parameters
-
-**`replacement-sets.yaml`** - ETF replacement mappings
--   Use this if you need to trade different equities than your strategy specifies
--   Common for IRA accounts with restrictions on certain ETFs
--   Reference a replacement set in your account config with `replacement_set: ira`
+-   `trading.minimum_cash_reserve_percent` (default `0.25`) is the cash floor as a percent of the account's total value. Setting it below 0.25% may not cover commissions on large purchases of low-priced shares.
 
 Both files require a service restart after changes: `docker compose restart`
 
@@ -225,14 +217,14 @@ Replace `YOUR_ACCOUNT_ID` with your actual IBKR account number (e.g., `U1234567`
 
 ## Scheduled Rebalancing
 
-You can schedule accounts to be automatically rebalanced at market open (9:30 AM ET) on trading days. This is useful when you miss an automatic rebalance for any reason and want to schedule the rebalance at market open. Also if an account could not be rebalanced automatically due to PDT protection, it is automatically scheduled for next market open.
+Accounts can be scheduled to rebalance at market open (09:35 AM ET) on trading days — for example ahead of an expected deposit, or because you missed an event. The scheduler is also how failed live runs are retried: a failed run is queued and attempts once more at the next market open (see [Retries](#retries)). A run that fails during the market-open job itself is **not** retried again.
 
 ### How It Works
 
-- The scheduler runs at 9:30 AM ET every weekday (configurable in `config.yaml`)
+- The scheduler fires at 09:35 AM ET every weekday (configurable with `scheduler.market_open_time` in `config.yaml`)
 - NYSE holidays and weekends are automatically skipped
-- Accounts are processed sequentially; if one fails, others continue
-- The scheduled accounts list is cleared after processing
+- Each scheduled account runs for its strategy; if a strategy is already running when the job fires, its scheduled accounts are skipped (they are notified, not retried)
+- Only the IDs that were actually processed are removed from the schedule list
 
 ### Managing Scheduled Accounts
 
@@ -264,6 +256,41 @@ Use the `schedule.sh` tool to manage which accounts are scheduled for market-ope
 - Changes take effect immediately (no restart required)
 - The schedule persists across container restarts
 - Requires `jq` to be installed (use WSL on Windows)
+
+---
+
+## Retries
+
+A live run that fails for any reason — for example the market closed mid-run, an allocation error, or a foreign working order — is queued once and retried at the next market open (09:35 AM ET) with fresh targets and fresh account data. You get a `will retry` notification with the day and time. A run that fails during that scheduled retry is **not** retried again (you get a `not retried` notification instead). Preview runs never retry. If you have disabled the scheduler, failed live runs are not queued at all.
+
+---
+
+## Replacement Sets
+
+Some accounts cannot hold certain ETFs (e.g. IRAs). A replacement set moves that exposure to an allowed instrument. Replacement sets are built into the app; there is no `replacement-sets.yaml` file to edit.
+
+The built-in **`ira`** set:
+
+| Replaced symbol | Replacement | Scale |
+|-----------------|-------------|-------|
+| `DBC` | `PDBC` | 1.0 |
+| `UUP` | `USDU` | 1.0 |
+| `VIXY` | `VXX` | 1.0 |
+| `VIXM` | `VXZ` | 1.0 |
+| `UVXY` | `VXX` | 1.5 |
+| `SVXY` | `USMV` | 1.0 |
+
+Reference a set from `accounts.yaml` with `replacement_set: ira`. When a replacement would be needed, any non-replaced symbols are trimmed to make room.
+
+---
+
+## Upgrading to v3.0.0
+
+This release deliberately changes behaviour: **the first run after upgrading may trade more than usual**, because small drifts are now corrected on every run (the old "close enough" band and buy scaling are gone).
+
+**Config keys removed from `config.yaml`:** the `replacement` and `pdt_protection` sections, and the keys `price_cache_ttl_seconds`, `synthetic_ask_offset_usd`, `minimum_cash_reserve_usd`, `commission_rate`, `max_account_utilization`, `allocation_threshold_percent`, `order_tif`, `post_completion_delay_seconds`. Remove them or start-up will fail with a message naming each one. `trading.minimum_cash_reserve_usd` and `trading.commission_rate` are replaced by `trading.minimum_cash_reserve_percent`.
+
+**Account keys removed from `accounts.yaml`:** `cash_reserve_percent` and `pdt_protection_enabled`. Remove them or start-up will fail. The cash floor is now the global `trading.minimum_cash_reserve_percent`.
 
 ---
 

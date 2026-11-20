@@ -2,7 +2,7 @@
 
 `execute_strategy_batch(...)` runs in a process-pool worker. It never raises:
 any unexpected exception becomes `INTERNAL_ERROR` results for every account.
-`SubprocessManager` and its signal-handler/-exit machinery were removed (WRK-1).
+The old per-worker signal/machinery layer and its `sys.exit` are gone (WRK-1).
 """
 
 from __future__ import annotations

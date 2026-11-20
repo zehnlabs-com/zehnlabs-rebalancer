@@ -5,7 +5,7 @@ ably==2.0.12
 tzdata==2025.2
 
 # Scheduler dependencies
-APScheduler>=3.10
+APScheduler>=3.10,<4
 exchange-calendars>=4.5
 
 # NOTE: pydantic, aiohttp, PyYAML, ib-async are installed via ibkr-connector

@@ -19,30 +19,28 @@ The system uses modular Python packages for broker-agnostic design:
    - See [Configuration](#configuration-files) section for details
 
 2. **broker-connector-base** (v1.0.0) - Abstract broker interface
-   - `BrokerClient`: Abstract base class with async methods (connect, disconnect, place_order, get_account_snapshot, etc.)
-   - `BaseRebalancer`: Required abstract methods for rebalancing
-   - Common models: `Trade`, `AccountSnapshot`, `AccountPosition`, `ContractPrice`, `RebalanceResult`, `CalculateRebalanceResult`
-   - Exceptions: `BrokerConnectionError`, `BrokerAPIError`, `OrderExecutionError`
+   - `BrokerConnection`: Async abstract base class — `connect`/`close`, `account_state()`, `quotes()`, `working_orders()`, `cancel_own_orders()`, `place()`, `order_states()`
+   - `supports_fractional`: False for IBKR (whole-share broker)
+   - Domain models (frozen dataclasses): `Quote`, `Position`, `AccountState`, `OrderRequest`, `OrderState`, `WorkingOrder`, plus the `Side`, `OrderStatus`, `PriceSource` enums
+   - Exceptions: `BrokerError` and subclasses (`ConnectionFailedError`, `AccountDataError`, `PricingError`, `NoPriceError`, `CancelNotConfirmedError`, `OrderPlacementError`)
 
-3. **rebalance-calculator** (v1.0.0) - Broker-agnostic calculation engine
-   - `TradeCalculator`: Calculates trades from target allocations and current positions
-   - Two-phase execution strategy (sells first, then buys with updated cash)
-   - Cash constraint handling with scaling algorithm
-   - Allocation threshold logic (configurable via `config.yaml`)
+3. **rebalance-calculator** (v1.0.0) - Broker-agnostic calculation engine (pure functions; no I/O, no clock, no logging)
+   - `validate_and_scale`: validate and scale raw API weights to sum to 1.0 (or empty list = sell everything)
+   - `apply_replacements`: apply a built-in replacement set (REP)
+   - `plan_sells` / `plan_buys`: two-phase whole-share rebalance plans (§7); sells market, buys limit, cash-floor trim removes the lowest-weight buys first
 
 4. **ibkr-connector** (v1.0.0) - IBKR-specific implementation
-   - `IBKRClient`: Implements `BrokerClient` for Interactive Brokers Gateway API
-   - `IBKRRebalancer`: Implements `BaseRebalancer` with IBKR-specific rebalancing logic
-   - `AllocationService`: Fetches strategy allocations from API
-   - `ReplacementService`: Handles IRA ETF replacements with scaling
-   - Price caching (configurable TTL) to reduce API calls
+   - `IBKRConnection`: Implements `BrokerConnection` against the IBKR Gateway API
+   - Own/foreign order handling, own-order cancel, whole-share-only placement
+   - Quote chains (mid/last/close/bar) with market-data retries
 
 ### Main Application
 
 Uses packages via:
-- `broker_factory.py`: Creates broker clients based on `AccountConfig.broker` field
-- `trading_executor.py`: Uses `managed_broker_client()` context manager with broker factory
-- `models.py`: Imports shared models from packages, keeps app-specific models only
+- `accounts.py`: AccountConfig + AccountRegistry (active accounts filtered by mode + enabled)
+- `allocations.py`: AllocationsClient (fetch raw allocations over HTTP, one aiohttp session per worker)
+- `rebalance.py`: `rebalance_account(...)` — the single account-run operation (§8), never raises
+- `results.py`: AccountRunResult / RunOutcome / FailureReason (the only pydantic result that crosses the process boundary)
 
 ### Design Benefits
 
@@ -119,163 +117,131 @@ python -m app.main
 The system operates on a **strategy-based event model**:
 
 1. **Event Sources**:
-   - **Ably Real-time**: Strategy allocation updates pushed to channels (one channel per strategy)
-   - **Manual Events**: JSON files dropped in `data/manual-rebalance/` directory
+   - **Ably Real-time**: Strategy allocation updates pushed to channels (one channel per strategy), source `signal`
+   - **Manual Events**: JSON files dropped in `data/manual-rebalance/` directory, source `manual`
+   - **Scheduled**: the market-open job, source `scheduled`
 
-2. **Strategy Grouping** (`ably_service.py`):
-   - Loads `accounts.yaml` at startup
-   - Groups accounts by `strategy_name`
-   - Subscribes once per strategy to Ably channels
-   - Routes incoming events to all accounts in that strategy
+2. **Strategy grouping** (`ably_service.py` / `main.py`):
+   - Loads `accounts.yaml` at startup; groups accounts by `strategy_name`
+   - Subscribes once per strategy to Ably channels; routes incoming events to all active accounts in that strategy
 
 3. **Parallel Execution** (`strategy_executor.py`):
-   - Uses ProcessPoolExecutor with 32 workers
-   - Prevents duplicate execution per strategy (deduplication via `active_strategies` set)
-   - Spawns isolated subprocess for each strategy execution
-   - Sends per-account notifications on completion
+   - One `ProcessPoolExecutor(max_workers, mp_context=fork)`; drops a trigger for a strategy already running
+   - Parent detects live runs during a closed market before submitting (→ `MARKET_CLOSED`)
+   - Post-processes each result: retry queue (§10.5), run record (§12), notification (§11) — each wrapped so one failure never stops the rest
 
-4. **Trading Execution** (`trading_executor.py`):
-   - Each subprocess handles one strategy with multiple accounts
-   - Accounts processed sequentially within subprocess (IBKR API limitation)
-   - Each account gets dedicated IBKR connection with unique client_id (derived from account_id hash)
+4. **Worker** (`trading_executor.py`):
+   - `execute_strategy_batch(...)` runs one strategy in a process-pool subprocess, opening one `AllocationsClient`
+   - Runs `rebalance_account()` for every account with `asyncio.gather(..., return_exceptions=True)`
+   - Each account gets a dedicated connection with a unique client_id (int of the digits of the account ID)
 
 ### Key Data Flow
 
 ```
-Ably Event (strategy channel)
-  -> AblyEventSubscriber._handle_strategy_event()
-  -> StrategyExecutor.execute_strategy()
+Ably Event / manual file / scheduled job
+  -> StrategyExecutor.execute(strategy, accounts, mode, source)
   -> ProcessPoolExecutor spawns subprocess
   -> trading_executor.execute_strategy_batch()
-    -> For each account:
-      -> PDTProtectionService.is_execution_allowed() (if pdt_protection_enabled)
-      -> IBKRClient.connect()
-      -> Rebalancer.rebalance_account()
-        -> AllocationService.get_allocations() (fetch from API)
-        -> ReplacementService.apply_replacements() (if replacement_set configured)
-        -> IBKRClient.get_account_snapshot()
-        -> TradeCalculator.calculate_trades()
-        -> Execute sells first, wait for completion
-        -> Recalculate with updated cash
-        -> Execute buys
-      -> IBKRClient.disconnect()
-      -> PDTProtectionService.record_execution() (after successful rebalance)
+    -> For each account (gather):
+      -> rebalance_account()            (event-broker/app/rebalance.py, §8)
+        -> AllocationsClient.fetch()    (raw weights)
+        -> validate_and_scale + apply_replacements
+        -> BrokerConnection.account_state() / quotes()
+        -> plan_sells() -> place sells (market), wait
+        -> read updated cash -> plan_buys() -> place buys (limit), wait
+      -> returns AccountRunResult (never raises)
+    -> parent: retry queue (§10.5), run record (§12), notification (§11)
 ```
 
 ### Module Organization
 
 **Packages** (in `packages/`):
-- `app-config/`: Application configuration management with Pydantic validation
-- `broker-connector-base/`: Abstract broker interfaces and shared models
-- `rebalance-calculator/`: Broker-agnostic trade calculation logic
-- `ibkr-connector/`: IBKR-specific client, rebalancer, allocation, and replacement services
+- `app-config/`: Strict pydantic `AppConfig` models (extra forbidding) and `load_config`
+- `broker-connector-base/`: Abstract `BrokerConnection` interface, errors, and the §6.1 domain models
+- `rebalance-calculator/`: Pure rebalance math (targets, replacement sets, planner) — no I/O, no config lookups
+- `ibkr-connector/`: `IBKRConnection`, the IBKR-specific `BrokerConnection` implementation
 
 **Main Application** (in `event-broker/app/`):
-- `main.py`: Entry point, event file watcher, signal handling
-- `models.py`: App-specific models only (imports shared models from packages)
+- `main.py`: Entry point, startup order (§13), manual-event watcher, heartbeat
+- `accounts.py`: `AccountConfig` + `AccountRegistry` (load_accounts, strict validation)
+- `allocations.py`: `AllocationsClient` (async HTTP, one aiohttp session per worker)
+- `market_clock.py`: `MarketClock` (XNYS calendar, next_scheduled_run)
+- `rebalance.py`: `rebalance_account(...)` — the single account-run operation (§8)
+- `results.py`: `AccountRunResult`, `RunOutcome`, `FailureReason`
+- `settings.py`: `RuntimeSettings` read once from env (API key masked)
 - `services/`:
-  - `ably_service.py`: Real-time event subscription
-  - `strategy_executor.py`: Orchestrates parallel execution
-  - `trading_executor.py`: Subprocess worker for account processing (uses broker factory)
-  - `notification_service.py`: User notifications
-  - `pdt_protection_service.py`: PDT (Pattern Day Trader) protection tracking
-- `trading/`:
-  - `broker_factory.py`: Creates broker clients based on account configuration
+  - `ably_service.py`: Real-time event subscription (task set added/discarded per signal)
+  - `strategy_executor.py`: Process pool, running-strategy set, post-processing (retry/records/notifications)
+  - `trading_executor.py`: Worker entry point `execute_strategy_batch(...)`
+  - `scheduler_service.py`: market-open job + atomic schedule-file helpers
+  - `notification_service.py`: Notifier ABC + NtfyNotifier + message rendering
+  - `run_records.py`: write + prune `data/runs/*.jsonl` (30 days)
 
 ## Configuration Files
 
 ### config.yaml
-**New in v2.1**: Centralized application configuration file that replaces all hard-coded constants.
-
-All configuration values are validated at startup using Pydantic models with type and range checking. Invalid configuration will cause the service to fail immediately with clear error messages.
+Strict pydantic validation (extra=forbid at every level). Unknown or removed keys stop the service at startup with a message naming each key. All configuration values are passed into constructors; packages never call `get_config()` or read env vars.
 
 **Structure**:
 ```yaml
-# IBKR Connection Settings
 ibkr:
   request_timeout_seconds: 10.0
   connection_timeout_seconds: 10
   connection_stabilization_delay_seconds: 0.5
-  price_cache_ttl_seconds: 30
-  market_data_type: 1  # 1=live, 2=frozen, 3=delayed, 4=delayed-frozen
-  synthetic_ask_offset_usd: 1.00
+  market_data_type: 1  # 1 live, 2 frozen, 3 delayed, 4 delayed-frozen
   order_placement_delay_seconds: 1.0
+  market_data_retry_delay_seconds: 2.0
+  market_data_max_retries: 10
   ports:
     live_internal: 4003
     paper_internal: 4004
-
-# Trading Financial Parameters
 trading:
-  minimum_cash_reserve_usd: 100.0
-  commission_rate: 0.01  # 1%
-  max_account_utilization: 0.995  # 99.5%
-  order_tif: DAY  # Time In Force: DAY, GTC, IOC, GTD
-  buy_slippage_percent: 0.5
-  allocation_threshold_percent: 0.5
-  order_timeout_seconds: 300
+  minimum_cash_reserve_percent: 0.25   # 0-5. cash floor as % of total value
+  buy_slippage_percent: 0.5            # 0-5. limit = buy ref * (1 + this/100)
+  order_timeout_seconds: 300           # per leg
   order_status_check_interval_seconds: 2.0
-  post_completion_delay_seconds: 1.0
-
-# ETF Replacement Settings
-replacement:
-  normalization_trigger_threshold: 0.0001
-  normalization_failure_threshold: 0.01
-  minimal_non_replaced_allocation_percent: 0.1
-
-# PDT Protection
-pdt_protection:
-  next_execution_time: "09:30"  # Market open (24-hour format, ET timezone)
-
-# Service Configuration
+  cancel_confirm_timeout_seconds: 30
+  cash_update_timeout_seconds: 30
 service:
   heartbeat_interval_seconds: 1.0
   manual_event_check_interval_seconds: 1.0
   error_recovery_delay_seconds: 5.0
   manual_event_file_path: "/app/data/manual-rebalance/rebalance.json"
-
-# Executor Configuration
+scheduler:
+  enabled: true
+  market_open_time: "09:35"   # HH:MM, ET
+  scheduled_file_path: "/app/data/market-open/scheduled.json"
 executor:
   max_workers: 32
-
-# API Configuration
 api:
   rebalance_auth_timeout_seconds: 10
   allocation_timeout_seconds: 30
 ```
 
-**Testing Configuration**:
-```bash
-# Validate configuration file
-python test-config.py
-```
-
 **Important**: Changes to `config.yaml` require service restart: `docker-compose restart`
 
 ### accounts.yaml
-Defines trading accounts and their strategy assignments. Each account requires:
+Defines trading accounts and their strategy assignments, strictly validated. Each account supports:
 - `account_id`: IBKR account ID (e.g., U123456, DUM959247)
 - `type`: "paper" or "live" (must match TRADING_MODE env var)
 - `enabled`: true/false to enable/disable account
 - `strategy_name`: Strategy identifier (lowercase, hyphens, e.g., "etf-blend-200-35")
-- `cash_reserve_percent`: Buffer percentage (0-100, typically 1.0 for 1%)
-- `replacement_set` (optional): Name of replacement set for IRA restrictions
-- `pdt_protection_enabled` (optional): Prevents same account from rebalancing twice in same trading day (defaults to false)
+- `replacement_set` (optional): Name of a built-in replacement set (e.g., `ira`)
+- `broker`: defaults to `ibkr`
+
+The account's `client_id` is the int of the digits in the account ID (same rule was already used for IBKR connections). The cash floor is the global `trading.minimum_cash_reserve_percent`; there is no per-account cash reserve.
 
 **Important**: Changes to `accounts.yaml` require service restart: `docker-compose restart`
 
-### replacement-sets.yaml
-Maps restricted ETFs to other alternatives:
-- Keyed by replacement set name (e.g., "ira")
-- Each entry specifies `source`, `target`, and `scale` factor
-- Applied when account has `replacement_set` configured
-- Used for accounts that cannot trade certain ETFs
+### Replacement sets
+Replacement sets (e.g. `ira`) are **built into the code** (`rebalance_calculator/replacement_sets.py`). There is no `replacement-sets.yaml` file. Reference a set from `accounts.yaml` with `replacement_set: ira`.
 
 ### docker-compose.yaml
 - Defines both ibkr-gateway and event-broker services
 - Environment variables configure trading mode, API keys, notification channels
-- Volume mounts for **config.yaml**, accounts.yaml, replacement-sets.yaml, data/
+- Volume mounts for config.yaml, accounts.yaml, and data/ (no replacement-sets.yaml)
 - Log rotation configured (max 100MB, 10 files)
-- Config path can be overridden with `CONFIG_PATH` environment variable (defaults to `/app/config.yaml`)
+- Version marker (`x-system-version`) is `3.0.0`
 - Supports running multiple isolated instances on the same host — see [Multiple Instances](#multiple-instances) section
 
 ## Environment Variables
@@ -314,36 +280,28 @@ The subscriber fetches the shared read-only Ably key once at startup and passes 
 The rebalancer uses a two-phase approach to handle cash constraints:
 
 1. **Sell Phase**:
-   - Calculate all needed sells based on target allocations
-   - Execute all sell orders
-   - Wait for order completion
+   - Compute the sell plan from target weights and marks (`plan_sells`)
+   - Place all sells as **market** orders (symbol order) and wait for them
 
 2. **Buy Phase**:
-   - Refresh account snapshot to get updated cash balance
-   - Recalculate buy orders with actual available cash
-   - Execute buy orders in allocation-weighted order
+   - Read the updated cash (lower of reported cash vs. `state0.cash + fills`)
+   - Recompute the buy plan with fresh quotes (`plan_buys`), sized at the ask + slippage buffer
+   - Place buys as **limit** orders and wait for them
 
 ### Order Execution
-- **Order Types**: MARKET orders for sells, LIMIT orders for buys
-- **Time In Force (TIF)**: All orders explicitly set TIF from config (default: DAY)
-- **Buy orders**: Use ask price * (1 + buy_slippage_percent/100) as limit price
-- **Sell orders**: Use bid price (MARKET orders)
-- **Price caching**: 30-second TTL to reduce API calls during multi-account processing
+- **Order Types**: MARKET orders for sells, LIMIT orders for buys; all orders are **DAY**
+- **Buy limit**: ask × (1 + buy_slippage_percent/100), rounded half-up
+- **Order placement**: sell all, wait, then buy all; within a leg, orders are placed in symbol order
+- **At the start of a live run** the app cancels its own working orders, and warns (does not trade) if foreign working orders are present
+- **Prices**: mark = mid, else last, else close, else bar; buys use ask, else last, else close, else bar
+- **Order status** is read from the stored order handles only, never by re-scanning `ib.trades()` (order numbers repeat across client IDs)
 
 ### Client ID Strategy
-Each IBKR connection requires a unique client_id to prevent collisions. The system uses:
-```python
-client_id = hash(account_id) % 10000 + 1000  # Range: 1000-10999
-```
-This ensures consistent client IDs per account across restarts while avoiding conflicts.
+Each IBKR connection requires a unique `client_id` to prevent collisions. It is the **int of the digits** of the account ID (e.g. `U123456` → `123456`), from `AccountConfig.client_id`. It is consistent across restarts and has no hash collisions.
 
-### PDT Protection
-Prevents the same account from rebalancing multiple times within the same trading day.
-
-- **Enable**: Set `pdt_protection_enabled: true` in accounts.yaml
-- **Behavior**: Blocks rebalances until next trading day at 9:30 AM ET
-- **Storage**: Tracks execution timestamps in `data/last-executions/{account_id}.json`
-- **Override**: Delete the account's JSON file in `data/last-executions/` to allow immediate rebalance
+### Cash Reserve & Retries
+- A cash floor of `trading.minimum_cash_reserve_percent` (default 0.25%) of the account's total value is never spent. When cash is short, the **lowest-weight** buys are trimmed first, share by share.
+- A live run that fails, or that starts while the market is closed, is queued and retried **once** at the next market open (09:35 ET). A scheduled run that fails is not retried. There is no PDT protection.
 
 ## Manual Event System
 
@@ -394,7 +352,7 @@ pip list | grep -E "(broker|rebalance|ibkr)"
    - Or use shortcut: `./tools/reload.sh`
 
 3. **Configuration Changes**:
-   - Edit `accounts.yaml` or `replacement-sets.yaml`
+   - Edit `config.yaml` or `accounts.yaml`
    - Restart services: `docker-compose restart`
 
 4. **Testing Manual Rebalancing**:
@@ -419,7 +377,7 @@ You can run multiple fully isolated instances of the entire stack (each with its
 - Volume: `<project>_ib_data` (separate IBKR Gateway session per instance)
 - Network: `<project>_ibkr-network` (instances cannot cross-talk)
 
-The `data/` directory is mounted from the local folder (`./data`), so PDT protection state and manual rebalance events are already isolated per folder.
+The `data/` directory is mounted from the local folder (`./data`), so the market-open queue and manual rebalance events are already isolated per folder.
 
 ### Setup for a second instance
 
@@ -449,10 +407,10 @@ VNC_PORT=5901
 ## Common Pitfalls
 
 - **Port Mismatch**: Ensure TRADING_MODE env var matches account type. Live accounts need port 4001, paper accounts need port 4002.
-- **Client ID Collisions**: The system auto-generates client IDs from account IDs. If you see connection errors, check for hash collisions.
-- **Stale Price Cache**: Price cache has 30s TTL. For rapid retesting, wait 30s or restart service.
-- **Strategy Still Running**: The system prevents duplicate strategy execution. Wait for completion before triggering again.
+- **Client ID**: One per account, derived from the digits of the account ID. Two active accounts producing the same client ID fail validation.
+- **Strategy Still Running**: The system prevents duplicate strategy execution; a trigger for an already-running strategy is dropped. Wait for completion before triggering again.
 - **Account Configuration**: Changes to accounts.yaml require restart - docker-compose restart won't reload the config without a container restart.
+- **Missing account data fails the run**: a missing cash or NetLiquidation figure is an error, never treated as zero.
 
 ## Agent skills
 

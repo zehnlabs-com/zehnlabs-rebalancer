@@ -1,7 +1,7 @@
 """Built-in replacement sets (PRD §7.2).
 
 Replacement rules move exposure from an instrument the account cannot hold to
-one it can. The sets live in code — `replacement-sets.yaml` is gone.
+one it can. The sets live in code, not in an external YAML file.
 """
 
 from __future__ import annotations

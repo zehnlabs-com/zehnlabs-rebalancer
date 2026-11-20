@@ -301,3 +301,112 @@ WP7-worker concerns; tests use fakes (§0.4).
 **Not done / why:** nothing within §10.2-10.6 / §11 / §12 / §13 / §16.3. Legacy removals that belong to WP8 (§4.3: `pdt_protection_service.py`, `trading/broker_factory.py`, old `models.py`, `replacement-sets.yaml`, version bumps, README/AGENTS/docs/changelog) are deliberately untouched to keep the new WP7 modules importable and the baseline green.
 
 **Open questions:** none blocking. `RUNS_DIR` (deviation above) is offered as a small, non-schema setting for local testing; flag to Faisal whether a `config.yaml` `runs` path should be added instead.
+
+---
+
+## WP8 — Deletions, Docker/compose, docs, changelog, removal search, final check (§4.3, §13.3–13.4, §14, §15, §16.4)
+
+**Status:** done
+
+**Commit:** this entry.
+
+**Requirement IDs done:**
+- §4.3 (files to delete). Deleted: `replacement-sets.yaml`; `event-broker/app/services/pdt_protection_service.py`;
+  `packages/broker-connector-base/src/broker_connector_base/{base_rebalancer.py,base_client.py}`;
+  `packages/ibkr-connector/src/ibkr_connector/{rebalancer.py,client.py,models.py,allocation_service.py,replacement_service.py}`;
+  `packages/rebalance-calculator/src/rebalance_calculator/calculator.py`;
+  `event-broker/app/trading/broker_factory.py` and the now-empty `event-broker/app/trading/__init__.py` (the
+  `trading/` package is gone entirely — §4.1's architecture has no `trading/`); and `event-broker/app/models.py`
+  (its only consumers were the deleted PDT service; it held `PDTCheckResult` plus the legacy
+  `AccountExecutionResult`/`StrategyExecutionResult` models, all displaced by `results.py`). Removed `PDTCheckResult`;
+  removed every `SubprocessManager` and `CachedPrice` reference.
+- §4.2 dependency cleanup that the deletions make safe: removed the legacy models from
+  `broker-connector-base` (`src/broker_connector_base/models.py` now holds only the §6.1 dataclasses; the
+  `__init__.py` no longer exports `BrokerClient`, `BaseRebalancer`, `Trade`, `AllocationItem`, `AccountConfig`,
+  `AccountSnapshot`, `AccountPosition`, `ContractPrice`, `OrderResult`, `OpenOrder`, `RebalanceResult`,
+  `CalculateRebalanceResult`); removed `TradeCalculationResult` (and the `Trade`/pydantic imports) from
+  `rebalance-calculator` `models.py` and `__init__.py`; trimmed `ibkr-connector` `__init__.py` to export only
+  `IBKRConnection`.
+- §13.3 BOOT-3: `x-system-version` in `docker-compose.yaml` and `get_status()["version"]` in `main.py` → `3.0.0`.
+- §13.4 BOOT-4: removed the `./replacement-sets.yaml:/app/replacement-sets.yaml:ro` volume line from
+  `docker-compose.yaml`; nothing else in compose changed.
+- §14: §4.3-linked removals plus the removal search (see below). No source reference to any removed identifier
+  remains; only the intentional removal-gate messages (CFG-3/ACC-2, which must name the removed keys) and the new
+  `trading.minimum_cash_reserve_percent` key still contain the strings.
+- §15 DOC-1..4: README.md (removed "Cash Usage Maximization" and "Minimum Purchase Quantity"; added "How a
+  Rebalance Works", "Retries", "Replacement Sets" with the built-in `ira` table, and "Upgrading to v3.0.0";
+  removed `cash_reserve_percent`/`pdt_protection_enabled`/`replacement-sets.yaml`; documented
+  `trading.minimum_cash_reserve_percent` (0.25%, with the low-price-share commission caveat); updated the
+  scheduler to 09:35, foreign-order rule, TIF=DAY, and the margin/IRA cash-settlement note). AGENTS.md (rewrote
+  the architecture, event/data-flow, module-organization, config, accounts, replacement-set, docker and
+  trading-logic sections; removed PDT, the price cache, and the hash-based client-ID text — the real rule is the
+  digits of the account ID). `docs/rebalancing-logic.md` (new — the standalone description of §7, §8.1, §10.5, no
+  history; the file did not exist in the repo, so it was created fresh). `CHANGELOG.md` (new — a `3.0.0` entry
+  listing every §3.1 `SCOPE-*` change).
+- §16.4 definition-of-done items: see the item-by-item table below.
+
+**Tests added:** none. §16.2's test files are written and pass unchanged (157 tests); WP8 is deletions + docs, and
+removing source that only tests-rejected adds no new behaviour. `tests/test_config.py` / `tests/test_accounts.py`
+already cover the strict-message startup failures the PRD's old-file check relies on.
+
+**Deviations / scope notes (PRD §0.2 / §0.3):**
+- **§13.2 BOOT-2 Dockerfile healthcheck was left stale by WP7 and is fixed here.** WP7 implemented the heartbeat
+  touch in `main.py` but left `event-broker/Dockerfile` with the old `get_status().running` `HEALTHCHECK`
+  (which, post-refactor, `get_status()` no longer reports). WP8 is the "Docker/compose" package, so I replaced it
+  with the BOOT-2-specified `/tmp/heartbeat` mtime check. WP7's log claim of "BOOT-2 (heartbeat touch)" was
+  incomplete — recorded here for accuracy.
+- **§10.4 SCH-1 APScheduler pin was missed by WP7 and applied here.** `event-broker/requirements.txt` still read
+  `APScheduler>=3.10`; SCH-1 requires `>=3.10,<4`. Pinned to `>=3.10,<4` (the build installed 3.11.3, within the
+  pin). This is a WP7-scope line that WP8 corrected as part of the Docker final check; noted to keep the log
+  honest about requirement coverage.
+- **`event-broker/app/models.py` deleted in full, not just `PDTCheckResult`.** §4.3 says "remove the `PDTCheckResult`
+  model"; the whole file's remaining models (`AccountExecutionResult`, `StrategyExecutionResult`) are legacy
+  types displaced by `results.py` and have no remaining consumers, and §4.1's target architecture has no
+  `app/models.py`. Deleting the file is the minimal faithful reading.
+- **`docs/rebalancing-logic.md` did not exist.** DOC-3 says "replace its content"; with no file to replace, I
+  created it fresh with the requested standalone content.
+- **§14 strings in removal-gate messages and docs.** The CFG-3 (`config.yaml` loader) and ACC-2 (`accounts.py`)
+  rejection messages necessarily name the removed keys; `README.md`'s upgrade notes and the ADRs also discuss
+  them. §14's "only the changelog or the README" is therefore imperfect when read literally across the whole
+  repo; the check that matters — no *functioning* reference to any removed feature in executable source — passes
+  (search output below).
+
+**§14 removal search (run over `git grep` = tracked files only, tests excluded; intentional removal-gate lines
+and the retained `trading.minimum_cash_reserve_percent` key are the only non-doc hits):**
+- Removed identifiers with **zero** hits anywhere in tracked source: `commission_divisor`,
+  `max_account_utilization`, `PDTProtectionService`, `PDTCheckResult`, `last-executions`, `CachedPrice`,
+  `use_cached_prices`, `use_cache`, `synthetic_ask_offset`, `ReplacementConfig`,
+  `minimal_non_replaced_allocation_percent`, `normalization_trigger_threshold`, `normalization_failure_threshold`,
+  `BaseRebalancer`, `IBKRRebalancer`, `TradeCalculator`, `SubprocessManager`, `BrokerClient`,
+  `create_broker_client`, `send_warnings`, `get_open_orders`, `get_order_status`, and the string
+  `phase='buy'`.
+- Strings that appear only as (a) the CFG-3/ACC-2 rejection messages or (b) docs/ADRs upgrade notes:
+  `commission_rate`, `allocation_threshold_percent`, `minimum_cash_reserve_usd`, `cash_reserve_percent`,
+  `price_cache_ttl`, `order_tif`, `post_completion_delay`, `replacement-sets.yaml`.
+- `Trade` (bare) appears in `ibkr-connector/connection.py` referring to **ib_async's `Trade` object** (IB-9/IB-10),
+  not the removed pydantic model; `OrderStatus` is now only the §6.1 StrEnum.
+
+**§16.4 Definition of done — item by item:**
+1. *All tests pass.* — **MET.** `PYTHONPATH=event-broker python -m pytest -q tests` → **157 passed** (unchanged
+   from the WP7 baseline; deletions removed only dead code and kept the suite green).
+2. *§14 removals verified with a search.* — **MET.** Search run (`git grep` over tracked files) and reported above;
+   no executable-code reference to any removed feature remains.
+3. *`docker compose build event-broker` succeeds (if Docker is available).* — **MET.** Docker Engine **29.6.1** was
+   available on this machine; `docker compose build event-broker` completed and produced
+   `zehnlabs-rebalancer-serioustrader-event-broker:latest`. APScheduler resolved to 3.11.3 (within the `<4` pin).
+4. *Starting the container with the old `config.yaml` or the old `accounts.yaml.example` fails with the §5
+   messages.* — **MET (by design + existing tests).** The strict loader emits the exact CFG-3 messages and
+   `accounts.py` the exact ACC-2 messages; `tests/test_config.py` and `tests/test_accounts.py` assert several of
+   them verbatim. The Docker container was built, not run against a gateway (no real broker login; PRD §0.4), so
+   this is verified at the unit level rather than a live container boot.
+5. *README, AGENTS.md, rebalancing-logic.md and CHANGELOG.md are updated.* — **MET.** All four updated/created.
+
+**Not done / why:** nothing within §4.3, §13.3–13.4, §14, §15, §16.4. I did not touch Faisal's local
+`accounts.yaml` (it still carries the removed keys and is gitignored; ACC-4 says Faisal edits his own), nor the
+untracked `CLAUDE.md` / `working-docs/` planning scratch (both out of the git repo).
+
+**Open questions:**
+- Whether a deliberate cleanup of the local-only `CLAUDE.md`/`working-docs/` scratch is wanted (they are
+  untracked, so they are not part of any commit; left untouched).
+- Re-confirm the §16.4 old-config boot check is acceptable at unit-test level given PRD §0.4 forbids a real
+  Gateway connection; a `docker compose run` boot test (no broker) could be added by Faisal if wanted.
