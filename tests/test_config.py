@@ -41,6 +41,8 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(cfg.scheduler.market_open_time, "09:35")
         self.assertEqual(cfg.trading.minimum_cash_reserve_percent, 0.25)
         self.assertEqual(cfg.api.rebalance_auth_timeout_seconds, 10)
+        # Above IBKR's 11 s snapshot window (reqTickers ends on tickSnapshotEnd).
+        self.assertEqual(cfg.ibkr.request_timeout_seconds, 15.0)
         self.assertEqual(cfg.executor.max_workers, 32)
 
     def test_unknown_top_level_key(self):

@@ -360,6 +360,17 @@ async def rebalance_account(
                 V0 = sell_plan.total_value
                 for n in sell_plan.notes:
                     notes.append(_note(n.level, n.text))
+                # REC-2: record the snapshot before the cross-check, so an
+                # ACCOUNT_DATA_MISMATCH failure keeps the data it was judged on.
+                record.update({"V0": V0,
+                               "state0": {
+                                   "cash": state0.cash,
+                                   "net_liquidation": state0.net_liquidation,
+                                   "positions": [
+                                       {"symbol": p.symbol, "quantity": p.quantity}
+                                       for p in state0.positions
+                                   ],
+                               }})
                 nlv = state0.net_liquidation
                 nlv_mismatch = (nlv > 0 and abs(V0 - nlv) / nlv > 0.02) or (nlv <= 0 and V0 > 0)
                 if nlv_mismatch:
@@ -376,15 +387,7 @@ async def rebalance_account(
                     ", ".join(f"{o.symbol} -{int(o.quantity)}" for o in sell_plan.orders),
                     f"{V0:,.2f}", f"{reserve:,.2f}",
                 )
-                record.update({"V0": V0, "reserve": reserve,
-                               "state0": {
-                                   "cash": state0.cash,
-                                   "net_liquidation": state0.net_liquidation,
-                                   "positions": [
-                                       {"symbol": p.symbol, "quantity": p.quantity}
-                                       for p in state0.positions
-                                   ],
-                               }})
+                record["reserve"] = reserve
                 # REC-2 / M2: record the planned sell orders as soon as the plan is
                 # final, so a later failure still shows what the run was about to do.
                 planned_sells.extend(_plans_out(sell_plan.orders))

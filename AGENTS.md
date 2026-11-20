@@ -185,7 +185,7 @@ Strict pydantic validation (extra=forbid at every level). Unknown or removed key
 **Structure**:
 ```yaml
 ibkr:
-  request_timeout_seconds: 10.0
+  request_timeout_seconds: 15.0
   connection_timeout_seconds: 10
   connection_stabilization_delay_seconds: 0.5
   market_data_type: 1  # 1 live, 2 frozen, 3 delayed, 4 delayed-frozen

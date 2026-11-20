@@ -153,6 +153,15 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         conn = FakeBrokerConnection(state=state, quotes=QUOTES, fill=FILLS)
         result = await rebalance_account(ACCOUNT, "live", "signal", make_deps(conn, open_clock()))
         self.assertEqual(result.failure_reason, FailureReason.ACCOUNT_DATA_MISMATCH)
+        # REC-2: the failed run's record keeps the snapshot it was judged on.
+        self.assertAlmostEqual(result.record["V0"], 104031.45, places=6)
+        self.assertEqual(result.record["state0"]["cash"], 2500.0)
+        self.assertEqual(result.record["state0"]["net_liquidation"], 100000.0)
+        self.assertEqual(
+            result.record["state0"]["positions"],
+            [{"symbol": "SPY", "quantity": 70}, {"symbol": "TLT", "quantity": 400},
+             {"symbol": "GLD", "quantity": 60}, {"symbol": "XLE", "quantity": 100.37}],
+        )
 
 
 class OrderFailureTests(unittest.IsolatedAsyncioTestCase):

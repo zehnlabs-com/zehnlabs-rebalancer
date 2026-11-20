@@ -32,7 +32,7 @@ class IBKRConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_timeout_seconds: float = Field(
-        default=10.0, ge=1, le=120, description="Timeout for IBKR API requests"
+        default=15.0, ge=1, le=120, description="Timeout for IBKR API requests"
     )
     connection_timeout_seconds: int = Field(
         default=10, ge=1, le=120, description="Timeout for IBKR connection attempts"

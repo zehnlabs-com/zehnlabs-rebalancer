@@ -183,7 +183,7 @@ Replace the repository's `config.yaml` with exactly these keys and short comment
 
 ```yaml
 ibkr:
-  request_timeout_seconds: 10.0            # 1–120
+  request_timeout_seconds: 15.0            # 1–120 (above IBKR's 11 s snapshot window)
   connection_timeout_seconds: 10           # 1–120
   connection_stabilization_delay_seconds: 0.5   # 0–10
   market_data_type: 1                      # 1 live, 2 frozen, 3 delayed, 4 delayed-frozen
