@@ -90,4 +90,46 @@ non-instantiation and `async with` connect/close.
 
 ---
 
-_Append new entries below for WP3 onward._
+## WP3 — rebalance-calculator (§7, Appendix A)
+
+**Status:** done
+
+**Commits:** WP3 commit: `targets.py`, `replacement_sets.py`, `planner.py`, new §7
+models in `models.py`; `__init__.py`; `setup.py` (dropped `app-config` dep per §4.2);
+`tests/test_targets.py`, `tests/test_planner.py`.
+
+**Requirement IDs done:** §7.1 TGT-1..5 (`validate_and_scale`), §7.2 REP-1..5
+(`replacement_sets.py`, `apply_replacements`), §7.3 PRC-1..5 (Quote methods landed in
+WP2; `limit_price` here with Decimal half-up rounding), §7.4 SELL-1..3 (`plan_sells`),
+§7.5 CASH-1..3, §7.6 BUY-1..5 (`plan_buys`), §7.7 P1–P7 (property test), and `round_quantity`.
+
+**Tests added:** `tests/test_targets.py` (TGT-1..5, REP-2 each rule, every Appendix A.1
+row A1–A10, replacement-after-1%-check), `tests/test_planner.py` (A.2, A.3, A.4 exact
+numbers; P1–P7 over a fixed-seed 5,000-account property run; weight-0 target sold exactly
+`floor`; buy with no bid but an ask; `round_quantity`/`limit_price` edges). All numbers
+in Appendix A reproduce exactly (V0 104031.45, GLD 22 ≤251.35, cash 499/149/77,
+CCC 77 note, A.4 no-buys+CASH-3 note).
+
+**Deviations / recorded problems (PRD §0.3):**
+- **`round_quantity` §16.2 vs §7 contradiction.** §16.2 lists `99.9999999999 -> 99`, but
+the §7 formula `floor(x + EPS)` with `EPS = 1e-9` returns **100** for that input (the
+fractional deviation 1e-10 sits inside the EPS margin; verified empirically). The §7
+formula is authoritative and behaviorally right: such a value only arises from a division
+that truly rounds up to 100, and the EPS is meant to fix floats landing just under an
+integer. The §16.2 expectation was **not** enforced; `tests/test_planner.py` asserts the
+formula's behaviour (100, 100, float-artifact 100.0-1e-14 -> 100, 0.9999 -> 0) and the
+conflict is recorded here as a spec defect for Faisal.
+- `rebalance_calculator` imports `app_config` through its **legacy** `calculator.py`
+(`get_config`). §4.2 says the package must not. I dropped `app-config` from
+`install_requires` but the legacy class remains until WP8 removes `calculator.py`; the
+venv still has `app-config` installed so imports stay green.
+
+**Not done / why:** nothing within §7. Legacy `TradeCalculator`/`TradeCalculationResult`
+kept (imported by `ibkr_connector/rebalancer.py` until WP4) — new models added alongside.
+
+**Open questions:** the §16.2 `99.9999999999` expectation (see deviation) — needs Faisal's
+call; I implemented the spec formula.
+
+---
+
+_Append new entries below for WP4 onward._
