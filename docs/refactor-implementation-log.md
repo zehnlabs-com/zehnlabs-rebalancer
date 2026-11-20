@@ -6,10 +6,13 @@ go here, and requirements are referenced by ID.
 
 ## WP1 — Test environment, fakes skeleton, requirements-dev.txt
 
-**Status:** in progress (environment scaffolded; `tests/fakes.py` skeleton not yet written)
+**Status:** done
 
-**Commits:** none for requirements-dev.txt / venv (environment files are untracked where
-expected; the report file itself is part of this doc).
+**Commits:**
+- `0045b0a` (WP1 implementation): `tests/fakes.py` skeleton (`FakeBrokerConnection`,
+  `FakeAllocations`, `FakeClock`, `RecordingNotifier`). The environment hen
+  (`requirements-dev.txt`, venv) was scaffolded earlier; the report file itself is part of
+  this doc.
 
 **Requirement IDs:** §16.1 (environment), requirements-dev.txt.
 
@@ -25,12 +28,20 @@ expected; the report file itself is part of this doc).
 - Created `event-broker/requirements-dev.txt` (pytest + httpx).
 - Baseline verified: `PYTHONPATH=event-broker python -m pytest -q tests` → **22 passed**.
 
+**Tests added:** none in WP1. §16.2's test files belong to WP2+; WP1 ships only the fakes
+skeleton. The fakes were smoke-checked at a REPL (import, connection lifecycle, scripted
+fills, allocations, clock, notifier) but no committed test exercises them yet — the real
+checks come when WP2-7 drive them.
+
 **Not done / deviations:**
-- `tests/fakes.py` skeleton not yet written (WP1 implementation remains). The environment
-  scaffolding above is setup only; WP1's deliverables (fakes skeleton) still need coding.
-- Note: `packages/ibkr-connector/setup.py` still lists `rebalance-calculator==1.0.0`.
-  PRD §4.2 says to remove it. **Not changed here** — that is a WP2/Early-WP scope change;
-  left for its own work package to avoid out-of-order edits (§17).
+- `tests/fakes.py` is implemented but kept boundary-proof: `FakeBrokerConnection` does not
+  yet subclass `broker_connector_base.connection.BrokerConnection` and `RecordingNotifier`
+  does not yet subclass `Notifier` — the ABCs land in WP2/WP7 and the module must import
+  today. Their methods/signatures already match the §6.2 / §11.1 contracts, so the base-
+  class changes are mechanical. The fakes use `SimpleNamespace`/plain mappings rather than
+  the packages' domain models (which do not exist yet); WP2/WP6/WP7 reconcile the types.
+- `packages/ibkr-connector/setup.py` still lists `rebalance-calculator==1.0.0`. PRD §4.2
+  says to remove it. **Not changed here** — WP2 scope; left to avoid out-of-order edits (§17).
 
 **Open questions:** none at time of writing.
 
