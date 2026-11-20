@@ -81,7 +81,9 @@ class AllocationsClient:
         result: List[RawAllocation] = []
         for item in allocations:
             if not isinstance(item, dict):
-                continue
+                raise AllocationsUnavailable(
+                    f"Allocations API unavailable for {strategy} (invalid response)"
+                )
             symbol = item.get("ticker")
             if symbol is None:
                 symbol = item.get("symbol")

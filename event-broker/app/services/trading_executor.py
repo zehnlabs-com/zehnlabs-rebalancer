@@ -18,17 +18,33 @@ from app_config import AppConfig
 from ..accounts import AccountConfig
 from ..allocations import AllocationsClient
 from ..market_clock import MarketClock
-from ..rebalance import RunDeps, rebalance_account
+from ..rebalance import RunDeps, new_run_id, rebalance_account
 from ..results import AccountRunResult, FailureReason, RunOutcome
 from ..settings import RuntimeSettings
 
 _ET = ZoneInfo("America/New_York")
 _WORKER_FORMAT = "[%(asctime)s] [%(levelname)s] [%(strategy)s %(account_id)s %(run_id)s] %(message)s"
 
+# Bare `_worker_logger` calls (worker exceptions, IBKR close warnings) have no
+# strategy/account_id/run_id injected, so give the formatter defaults instead of
+# letting `%(run_id)s` raise "Formatting field not found" and drop the line (H1).
+_WORKER_LOG_DEFAULTS = {"strategy": "-", "account_id": "-", "run_id": "-"}
+
+
+class _WorkerFormatter(logging.Formatter):
+    """Worker formatter that fills missing context fields with defaults (H1)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        for key, value in _WORKER_LOG_DEFAULTS.items():
+            if not hasattr(record, key):
+                setattr(record, key, value)
+        return super().format(record)
+
+
 _worker_logger = logging.getLogger("worker")
 if not _worker_logger.handlers:  # WRK-2: one module-level stdout handler
     _stream = logging.StreamHandler(sys.stdout)
-    _stream.setFormatter(logging.Formatter(_WORKER_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+    _stream.setFormatter(_WorkerFormatter(_WORKER_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
     _worker_logger.addHandler(_stream)
 
 
@@ -53,8 +69,9 @@ def _internal_error_result(
     """A minimal FAILED/INTERNAL_ERROR result for a worker-level exception."""
     now = datetime.now(_ET)
     message = f"Internal error: {type(exc).__name__}: {exc}"[:300]
+    run_id = new_run_id(now, account.account_id)
     record = {
-        "run_id": f"{now:%Y%m%d-%H%M%S}-{account.account_id}",
+        "run_id": run_id,
         "account_id": account.account_id,
         "strategy_name": account.strategy_name,
         "mode": mode, "source": source,

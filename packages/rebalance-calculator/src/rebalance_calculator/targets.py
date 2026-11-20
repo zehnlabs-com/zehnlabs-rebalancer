@@ -46,7 +46,8 @@ def validate_and_scale(raw: Sequence[RawAllocation]) -> Targets:
             raise InvalidTargetsError(f"Strategy symbol {s!r} is invalid.")
         if s in seen:
             raise InvalidTargetsError(f"Strategy lists {s} twice.")
-        if weight is None or not isinstance(weight, (int, float)) or not _is_finite(weight) \
+        if weight is None or isinstance(weight, bool) \
+                or not isinstance(weight, (int, float)) or not _is_finite(weight) \
                 or weight < 0:
             raise InvalidTargetsError(
                 f"Strategy weight for {s} is missing, not a finite number, or negative."

@@ -18,6 +18,7 @@ from app_config import AppConfig
 
 from ..accounts import AccountConfig, AccountRegistry
 from ..market_clock import MarketClock
+from ..rebalance import new_run_id
 from ..results import AccountRunResult, FailureReason, NoteOut, RunOutcome
 from ..settings import RuntimeSettings
 from .notification_service import (
@@ -224,7 +225,7 @@ class StrategyExecutor:
     ) -> AccountRunResult:
         """Build a minimal parent-side result (market-closed, worker-crash, internal)."""
         now = self.clock.now().astimezone(_ET)
-        run_id = f"{now:%Y%m%d-%H%M%S}-{account.account_id}"
+        run_id = new_run_id(now, account.account_id)
         record = {
             "run_id": run_id,
             "account_id": account.account_id,

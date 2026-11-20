@@ -164,7 +164,8 @@ def _subtract_sells(
     return result
 
 
-def _new_run_id(now: datetime, account_id: str) -> str:
+def new_run_id(now: datetime, account_id: str) -> str:
+    """§8.1 step 1: `<stamp>-<account>-<4 hex>` (also used for parent-side results)."""
     stamp = now.astimezone(ET).strftime("%Y%m%d-%H%M%S")
     return f"{stamp}-{account_id}-{secrets.token_hex(2)}"
 
@@ -173,8 +174,16 @@ async def rebalance_account(
     account: AccountConfig, mode: str, source: str, deps: RunDeps
 ) -> AccountRunResult:
     """Run one rebalance attempt for one account. Never raises."""
-    run_id = _new_run_id(deps.clock.now(), account.account_id)
-    adapter = logging.LoggerAdapter(deps.logger, {"run_id": run_id})
+    run_id = new_run_id(deps.clock.now(), account.account_id)
+    # LOG-1: one adapter carrying strategy/account_id (from the worker) + run_id.
+    # LoggerAdapter.process replaces `extra`, it does not merge, so copy the
+    # parent's fields instead of nesting a second adapter.
+    if isinstance(deps.logger, logging.LoggerAdapter):
+        _extra = dict(deps.logger.extra)
+    else:
+        _extra = {}
+    _extra["run_id"] = run_id
+    adapter = logging.LoggerAdapter(deps.logger, _extra)
     started_at = deps.clock.now().astimezone(ET).isoformat()
 
     result = AccountRunResult(
@@ -376,6 +385,9 @@ async def rebalance_account(
                                        for p in state0.positions
                                    ],
                                }})
+                # REC-2 / M2: record the planned sell orders as soon as the plan is
+                # final, so a later failure still shows what the run was about to do.
+                planned_sells.extend(_plans_out(sell_plan.orders))
 
                 if mode == "preview":
                     # simulate sells at the sell reference, then plan buys
@@ -401,7 +413,6 @@ async def rebalance_account(
                     )
                     for n in buy_plan.notes:
                         notes.append(_note(n.level, n.text))
-                    planned_sells.extend(_plans_out(sell_plan.orders))
                     planned_buys.extend(_plans_out(buy_plan.orders))
                     record.update({
                         "planned_sells": [_o.model_dump() for _o in planned_sells],
@@ -427,6 +438,11 @@ async def rebalance_account(
                             placed.append(handle)
                     except OrderPlacementError as exc:
                         return await fail(FailureReason.ORDER_PLACEMENT_FAILED, str(exc))
+                    except Exception as exc:  # noqa: BLE001 - any transport error = placement failure
+                        return await fail(
+                            FailureReason.ORDER_PLACEMENT_FAILED,
+                            f"Order placement failed: {type(exc).__name__}: {exc}",
+                        )
                     try:
                         await _wait_for_orders(conn, placed, deps, adapter)
                     except _RunFailed as rf:
@@ -503,6 +519,15 @@ async def rebalance_account(
                     ),
                     f"{cash_base:,.2f}", f"{buy_plan.budget:,.2f}", f"{cost:,.2f}",
                 )
+                # REC-2 / M2: record the planned buys + prices/V1/trimmed now so a
+                # buy-leg failure keeps them (and the notification can say "BUY orders
+                # did not complete.").
+                planned_buys.extend(_plans_out(buy_plan.orders))
+                record.update({
+                    "prices": _prices_record(q1, marks),
+                    "V1": buy_plan.total_value,
+                    "trimmed": _trimmed_symbols(buy_plan),
+                })
 
                 # ---- 17. buy leg ---------------------------------------------- #
                 if buy_plan.orders:
@@ -520,6 +545,11 @@ async def rebalance_account(
                             placed.append(handle)
                     except OrderPlacementError as exc:
                         return await fail(FailureReason.ORDER_PLACEMENT_FAILED, str(exc))
+                    except Exception as exc:  # noqa: BLE001 - any transport error = placement failure
+                        return await fail(
+                            FailureReason.ORDER_PLACEMENT_FAILED,
+                            f"Order placement failed: {type(exc).__name__}: {exc}",
+                        )
                     try:
                         await _wait_for_orders(conn, placed, deps, adapter)
                     except _RunFailed as rf:
@@ -531,8 +561,6 @@ async def rebalance_account(
                 cash_end = cash_base - sum(
                     f.filled_quantity * (f.average_fill_price or 0.0) for f in buy_fills
                 )
-                planned_sells.extend(_plans_out(sell_plan.orders))
-                planned_buys.extend(_plans_out(buy_plan.orders))
                 record.update({
                     "planned_sells": [_o.model_dump() for _o in planned_sells],
                     "planned_buys": [_o.model_dump() for _o in planned_buys],

@@ -176,8 +176,8 @@ def load_accounts(path: Path, trading_mode: str) -> AccountRegistry:
                 f"accounts.yaml: accounts '{other}' and '{cfg.account_id}' produce the same "
                 f"IBKR client ID {cfg.client_id}; they cannot both be active."
             )
-            break
-        by_client[cfg.client_id] = cfg.account_id
+        else:
+            by_client[cfg.client_id] = cfg.account_id
 
     if problems:
         raise ValueError("\n".join(problems))

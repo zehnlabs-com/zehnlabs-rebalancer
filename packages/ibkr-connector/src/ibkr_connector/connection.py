@@ -87,6 +87,18 @@ class IBKRConnection(BrokerConnection):
             raise ConnectionFailedError("Not connected to IB Gateway")
         return self._ib
 
+    async def _bounded(self, awaitable: Any, exc_type: type, tag: str) -> Any:
+        """Run an IBKR await under `request_timeout_seconds`; map a stall (CFG-2, M3).
+
+        A silently stalled Gateway (e.g. mid nightly restart with a half-open socket)
+        would otherwise let a worker hang forever, keeping the strategy `running` and
+        dropping every later signal with no notification.
+        """
+        try:
+            return await asyncio.wait_for(awaitable, self._cfg.request_timeout_seconds)
+        except asyncio.TimeoutError:
+            raise exc_type(f"{tag} on IBKR gateway timed out")
+
     def _resolve_port(self) -> int:
         if self._settings.ib_port:
             return self._settings.ib_port
@@ -200,7 +212,9 @@ class IBKRConnection(BrokerConnection):
         missing = [s for s in symbols if s not in self._contracts]
         if missing:
             contracts = [Stock(s, "SMART", "USD") for s in missing]
-            qualified = await ib.qualifyContractsAsync(*contracts)
+            qualified = await self._bounded(
+                ib.qualifyContractsAsync(*contracts), PricingError, "Symbol qualification"
+            )
             for symbol, contract in zip(missing, qualified):
                 if contract is None:
                     raise PricingError(f"Symbol {symbol} could not be qualified on IBKR")
@@ -213,21 +227,27 @@ class IBKRConnection(BrokerConnection):
         contracts = await self._qualify(symbols)
         quote_map: dict[str, Quote] = {}
 
+        # IB-8: retry only the still-missing symbols on later attempts.
+        pending = list(contracts)
         for attempt in range(self._cfg.market_data_max_retries + 1):
-            tickers = await ib.reqTickersAsync(*contracts)
-            for contract, ticker in zip(contracts, tickers):
-                symbol = contract.symbol
-                quote_map[symbol] = Quote(
-                    symbol=symbol,
-                    bid=_price(ticker.bid),
-                    ask=_price(ticker.ask),
-                    last=_price(ticker.last),
-                    close=_price(ticker.close),
+            if pending:
+                tickers = await self._bounded(
+                    ib.reqTickersAsync(*pending), PricingError, "Market data request"
                 )
-            missing = [c for c in contracts
+                for contract, ticker in zip(pending, tickers):
+                    symbol = contract.symbol
+                    quote_map[symbol] = Quote(
+                        symbol=symbol,
+                        bid=_price(ticker.bid),
+                        ask=_price(ticker.ask),
+                        last=_price(ticker.last),
+                        close=_price(ticker.close),
+                    )
+            missing = [c for c in pending
                        if quote_map[c.symbol].bid is None or quote_map[c.symbol].ask is None]
             if not missing or attempt >= self._cfg.market_data_max_retries:
                 break
+            pending = missing
             await asyncio.sleep(self._cfg.market_data_retry_delay_seconds)
 
         # Bar fallback + final NoPriceError.
@@ -238,10 +258,13 @@ class IBKRConnection(BrokerConnection):
             cleaned = q._clean()
             if cleaned["bid"] is None and cleaned["ask"] is None \
                     and cleaned["last"] is None and cleaned["close"] is None:
-                bars = await ib.reqHistoricalDataAsync(
-                    self._contracts[symbol], endDateTime="",
-                    durationStr="1800 S", barSizeSetting="1 min",
-                    whatToShow="TRADES", useRTH=False,
+                bars = await self._bounded(
+                    ib.reqHistoricalDataAsync(
+                        self._contracts[symbol], endDateTime="",
+                        durationStr="1800 S", barSizeSetting="1 min",
+                        whatToShow="TRADES", useRTH=False,
+                    ),
+                    NoPriceError, "Historical bar request",
                 )
                 if bars:
                     quote_map[symbol] = Quote(
@@ -326,7 +349,9 @@ class IBKRConnection(BrokerConnection):
     async def working_orders(self) -> list[WorkingOrder]:
         """IB-12."""
         ib = self._require()
-        trades = await ib.reqAllOpenOrdersAsync()
+        trades = await self._bounded(
+            ib.reqAllOpenOrdersAsync(), ConnectionFailedError, "Open-orders request"
+        )
         result: list[WorkingOrder] = []
         for trade in trades:
             if trade.order.account == self.account_id and not trade.isDone():

@@ -23,6 +23,7 @@ from app_config import AppConfig
 
 from ..accounts import AccountConfig
 from ..market_clock import MarketClock
+from ..rebalance import new_run_id
 from ..results import AccountRunResult, RunOutcome
 from .notification_service import (
     Notifier,
@@ -207,7 +208,7 @@ class SchedulerService:
     async def _skipped_final(self, acct: AccountConfig) -> None:
         """SCH-6: one SKIPPED_FINAL notification for a dropped scheduled account."""
         now = self.clock.now()
-        run_id = f"{now.astimezone(_ET):%Y%m%d-%H%M%S}-{acct.account_id}"
+        run_id = new_run_id(now, acct.account_id)
         result = AccountRunResult(
             run_id=run_id,
             account_id=acct.account_id,
