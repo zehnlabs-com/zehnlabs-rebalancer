@@ -454,6 +454,20 @@ VNC_PORT=5901
 - **Strategy Still Running**: The system prevents duplicate strategy execution. Wait for completion before triggering again.
 - **Account Configuration**: Changes to accounts.yaml require restart - docker-compose restart won't reload the config without a container restart.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live as markdown files under `.scratch/<feature-slug>/` in this repo. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage labels, each string equal to its name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Local context
 
 If `AGENTS.local.md` exists alongside this file, read it and follow it. It holds machine-local
