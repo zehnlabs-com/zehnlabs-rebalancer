@@ -132,4 +132,49 @@ call; I implemented the spec formula.
 
 ---
 
-_Append new entries below for WP4 onward._
+## WP4 — ibkr-connector (§9)
+
+**Status:** done
+
+**Commits:** WP4 commit: `connection.py` (`IBKRConnection`), `__init__.py` exports it;
+`setup.py` dropped `rebalance-calculator` dep (§4.2); `tests/test_ibkr_connection.py`.
+
+**Requirement IDs done:** IB-1 (connect args incl. exact `fetchFields` = POSITIONS | ORDERS_OPEN
+| ACCOUNT_UPDATES, stabilization delay, disconnect/account check, `reqMarketDataType`),
+IB-2 (cash `$LEDGER-CashBalance` else `CashBalance`), IB-3 (NLV, missing → error), IB-4 (finite
+parse), IB-5 (positions, skip 0), IB-6 (non-STK/negative → error), IB-7 (one qualify call + cache),
+IB-8 (tickers, retry, 1-min bar fallback, NoPriceError), IB-9 (Market/Limit, DAY,
+`orderRef=zl-rebalancer:<run_id>`, whole-qty check, handle = `str(order.orderId)`),
+IB-10 (status from stored Trades, empty/unknown → WORKING, message from last `log` entry),
+IB-11 (own-order cancel, poll every 0.5s, CancelNotConfirmedError), IB-12 (foreign orders via
+`reqAllOpenOrdersAsync`, `own = clientId match`), IB-13 (`supports_fractional=False`),
+IB-14 (idempotent close, swallow+log), IB-15 (no `reqGlobalCancel`/multi/completed/executions).
+
+**Tests added:** `tests/test_ibkr_connection.py` (19 tests) mocking `ib_async.IB`: exact connect
+flags (and absence of EXECUTIONS/ORDERS_COMPLETE/SUB_ACCOUNT_UPDATES), unmanaged-account failure,
+cash ledger-vs-cashbalance fallback, neither → error, NLV missing → error, non-STK/negative
+position errors, zero-quantity skip, status mapping incl. empty → WORKING, own-vs-foreign
+classification, fractional quantity refused without a `placeOrder` call, quote fallback chain
+with the bar request (`useRTH=False`, `TRADES`), no-price-at-all → NoPriceError, DAY/TIF/ref/account
+on sell market and buy limit, cancel unconfirmed vs confirmed.
+
+**Deviations:**
+- IB-1's `settings` parameter is effectively **duck-typed**: `IBKRConnection` reads
+  `settings.ib_host`, `settings.ib_port`, `settings.trading_mode`. The real `RuntimeSettings`
+  is a WP5 `event-broker/app` type; a package must not import the app, so WP4 accepts any
+  object with those attributes. WP5's `RuntimeSettings` will provide them.
+- Kept legacy `client.py`/`rebalancer.py`/`models.py`/`allocation_service.py`/`replacement_service.py`
+  and their exports unchanged — their consumers (old `event-broker/app`, baseline tests) still
+  import them; §4.3 deletion is WP8. `connection.py` is additive.
+- `setup.py` now lists `broker-connector-base` + `app-config` (no `rebalance-calculator`),
+  per §4.2.
+
+**Not done / why:** the IB-12 note that manual TWS/mobile orders must be confirmed to appear in
+`reqAllOpenOrders` is a **Faisal paper-check** item (§16.5), not an agent task. Real Gateway
+connectivity was not exercised (PRD §0.4).
+
+**Open questions:** none (the IB-12 paper confirmation is field validation, deferred).
+
+---
+
+_Append new entries below for WP5 onward._
