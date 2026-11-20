@@ -1,21 +1,37 @@
 from .base_client import BrokerClient
 from .base_rebalancer import BaseRebalancer
+from .connection import BrokerConnection
+from .errors import (
+    BrokerError,
+    ConnectionFailedError,
+    AccountDataError,
+    PricingError,
+    NoPriceError,
+    CancelNotConfirmedError,
+    OrderPlacementError,
+)
 from .models import (
-    # Core trading models
+    # Legacy models (kept until their consumers are replaced in later work packages)
     Trade,
     AllocationItem,
     AccountConfig,
-    # Market data models
     AccountSnapshot,
     AccountPosition,
     ContractPrice,
-    # Order models
     OrderResult,
     OpenOrder,
-    OrderStatus,
-    # Rebalancing result models
     RebalanceResult,
     CalculateRebalanceResult,
+    # PRD §6.1 domain models
+    Side,
+    OrderStatus,
+    PriceSource,
+    Quote,
+    Position,
+    AccountState,
+    OrderRequest,
+    OrderState,
+    WorkingOrder,
 )
 
 __version__ = "1.0.0"
@@ -23,6 +39,14 @@ __version__ = "1.0.0"
 __all__ = [
     "BrokerClient",
     "BaseRebalancer",
+    "BrokerConnection",
+    "BrokerError",
+    "ConnectionFailedError",
+    "AccountDataError",
+    "PricingError",
+    "NoPriceError",
+    "CancelNotConfirmedError",
+    "OrderPlacementError",
     "Trade",
     "AllocationItem",
     "AccountConfig",
@@ -31,8 +55,16 @@ __all__ = [
     "ContractPrice",
     "OrderResult",
     "OpenOrder",
-    "OrderStatus",
     "RebalanceResult",
     "CalculateRebalanceResult",
+    "Side",
+    "OrderStatus",
+    "PriceSource",
+    "Quote",
+    "Position",
+    "AccountState",
+    "OrderRequest",
+    "OrderState",
+    "WorkingOrder",
     "__version__",
 ]

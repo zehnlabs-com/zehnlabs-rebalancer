@@ -47,4 +47,47 @@ checks come when WP2-7 drive them.
 
 ---
 
-_Append new entries below for WP2 onward._
+## WP2 — broker-connector-base (§6)
+
+**Status:** done
+
+**Commits:**
+- (`WP2`): `connection.py` (`BrokerConnection` ABC, §6.2), `errors.py` (§6.3),
+  §6.1 models in `models.py`; `__init__.py` exports; `tests/test_broker_connector_base.py`;
+  `tests/fakes.py` `FakeBrokerConnection` rewired to the real ABC/models.
+
+**Requirement IDs done:** §6.1 (Side, OrderStatus [new enum], PriceSource, Quote,
+Position, AccountState, OrderRequest, OrderState, WorkingOrder — frozen dataclasses;
+Quote.mark/buy_reference/sell_reference with the PRC-1..3 chains and NoPriceError),
+§6.2 (BrokerConnection ABC + `async with` support), §6.3 (BrokerError + 5 concrete
+subclasses).
+
+**Tests added:** `tests/test_broker_connector_base.py` (16 tests) — error hierarchy,
+enum values, Quote price chains + NaN/≤0 cleaning, frozen value types, ABC
+non-instantiation and `async with` connect/close.
+
+**Not done / why:**
+- Legacy `models.py` pydantic models, `base_client.py`, `base_rebalancer.py` were **kept**
+  alongside the new §6 models rather than deleted. Their consumers (`ibkr-connector`,
+  `event-broker/app/models.py`, `rebalance-calculator`) are not removed until WP4/WP8
+  (§4.3). Deleting them now would break the green baseline, which §17 forbids. New models
+  are additive; the old files/S4-related deletions land in the package that deprecates them.
+- The old string-constant `OrderStatus` class in `models.py` was replaced by the new
+  StrEnum (both named `OrderStatus`): verified no source consumer references it, so this
+  is safe and satisfies §14's "new enum replaces the old string-constant class".
+
+**Deviations:**
+- The venv had installed the four local packages as **copies** under `uv` (not editable),
+  so source edits were ignored. Reinstalled all four editable with
+  `uv pip install --python .venv/Scripts/python.exe -e packages/<p>` to match PRD §16.1.
+- `Quote.mark/buy_reference/sell_reference` are implemented here (they are model methods
+  that §6.1 itself enumerates) even though PRC-4's Decimal rounding lives with the planner
+  in WP3; PRC-4 is not a model method, so no WP3 logic was started early.
+- `packages/ibkr-connector/setup.py` still lists `rebalance-calculator==1.0.0`; §4.2 says
+  to remove it. Left for WP4 (its package), not changed here.
+
+**Open questions:** none.
+
+---
+
+_Append new entries below for WP3 onward._
