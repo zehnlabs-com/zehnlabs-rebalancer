@@ -101,6 +101,44 @@ class HappyPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.planned_buys), 3)
 
 
+class WorkerLoggingTests(unittest.IsolatedAsyncioTestCase):
+    """LOG-1 / WRK-2: run lines reach the worker handler with all three fields."""
+
+    async def test_run_lines_carry_strategy_account_and_run_id(self):
+        import io
+        from app.services import trading_executor as te
+
+        handler = te._worker_logger.handlers[0]
+        buf = io.StringIO()
+        old_stream = handler.setStream(buf)
+        old_level = te._worker_logger.level
+        # In production the level comes from the parent's basicConfig (LOG_LEVEL,
+        # default INFO), inherited by the forked worker; tests have no basicConfig.
+        te._worker_logger.setLevel(logging.INFO)
+        try:
+            adapter = logging.LoggerAdapter(
+                te._worker_logger,
+                {"strategy": "strategy-one", "account_id": ACCOUNT.account_id},
+            )
+            conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
+            deps = make_deps(conn, open_clock())
+            deps.logger = adapter  # exactly how trading_executor wires it
+            result = await rebalance_account(ACCOUNT, "live", "signal", deps)
+        finally:
+            handler.setStream(old_stream)
+            te._worker_logger.setLevel(old_level)
+        out = buf.getvalue()
+        tag = f"[strategy-one {ACCOUNT.account_id} {result.run_id}]"
+        self.assertIn(f"{tag} PLAN sells: XLE -100", out)
+        self.assertIn(f"{tag} PLAN buys: GLD +22", out)
+        self.assertNotIn(" -] ", out)  # no line fell back to a missing run_id
+
+    def test_worker_logger_does_not_propagate_to_root(self):
+        from app.services import trading_executor as te
+
+        self.assertFalse(te._worker_logger.propagate)
+
+
 class PreviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_preview_places_nothing_and_does_not_cancel(self):
         conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)

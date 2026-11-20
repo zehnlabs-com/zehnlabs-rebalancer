@@ -176,14 +176,17 @@ async def rebalance_account(
     """Run one rebalance attempt for one account. Never raises."""
     run_id = new_run_id(deps.clock.now(), account.account_id)
     # LOG-1: one adapter carrying strategy/account_id (from the worker) + run_id.
-    # LoggerAdapter.process replaces `extra`, it does not merge, so copy the
-    # parent's fields instead of nesting a second adapter.
+    # LoggerAdapter.process replaces `extra` rather than merging, so wrapping the
+    # worker's adapter would let it overwrite run_id. Copy its fields and wrap
+    # the underlying logger instead.
     if isinstance(deps.logger, logging.LoggerAdapter):
-        _extra = dict(deps.logger.extra)
+        _extra = dict(deps.logger.extra or {})
+        base_logger = deps.logger.logger
     else:
         _extra = {}
+        base_logger = deps.logger
     _extra["run_id"] = run_id
-    adapter = logging.LoggerAdapter(deps.logger, _extra)
+    adapter = logging.LoggerAdapter(base_logger, _extra)
     started_at = deps.clock.now().astimezone(ET).isoformat()
 
     result = AccountRunResult(

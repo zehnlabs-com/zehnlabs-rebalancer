@@ -46,6 +46,9 @@ if not _worker_logger.handlers:  # WRK-2: one module-level stdout handler
     _stream = logging.StreamHandler(sys.stdout)
     _stream.setFormatter(_WorkerFormatter(_WORKER_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
     _worker_logger.addHandler(_stream)
+# The forked worker inherits the parent's root handler (main.py basicConfig);
+# without this every worker line would be printed twice.
+_worker_logger.propagate = False
 
 
 def _connection_factory(account: AccountConfig, config: AppConfig, settings: RuntimeSettings):
