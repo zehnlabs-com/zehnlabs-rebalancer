@@ -269,4 +269,35 @@ WP7-worker concerns; tests use fakes (§0.4).
 
 ---
 
-_Append new entries below for WP7 onward._
+## WP7 — executor, worker, scheduler, retry, notifications, run records, Ably task set, main/startup/heartbeat, and the §16.3 adaptation of `tests/test_security_startup.py` (§10.2–10.6, §11, §12, §13, §16.3)
+
+**Status:** done
+
+**Commits:** WP7 commit (this entry).
+
+**Requirement IDs done:**
+- §10.2 EXE-1..3 (`strategy_executor.py`: explicit fork pool, running-set dedup with release-before-postprocessing, parent market-closed detection, BrokenProcessPool → `WORKER_CRASHED` + pool replacement, generic-exception → `INTERNAL_ERROR`, per-step-guarded postprocessing).
+- §10.3 WRK-1..2 (`trading_executor.py`: new event loop, one `AllocationsClient`, one `asyncio.gather(..., return_exceptions=True)`, `model_dump()` list, never raises, `INTERNAL_ERROR` fallback; module-level stdout handler with `[strategy account_id run_id]`; `SubprocessManager` and the `os.environ` copying removed).
+- §10.4 SCH-1..8 (`scheduler_service.py`: `AsyncIOScheduler` + `CronTrigger(mon-fri, hour, minute)`, misfire `300`/`true`/`1`; non-trading-day skip; malformed file left untouched; unknown IDs treated as processed; concurrent `execute(live, scheduled)`; `None` → `SKIPPED_FINAL`; SCH-7 removes only processed IDs; the atomic read/filter/write helpers reused by RTY-2).
+- §10.5 (scheduler-file add/remove + notification-kind mapping per row; RTY-1 scheduler-disabled → `FAILED_FINAL` + retry note, not queued; RTY-2 add/remove vs SCH-7 same helper; no locking; RTY-4 `add_account_to_schedule`'s PDT use gone — the helper is now `add_account(path, id, logger)`).
+- §10.6 SIG-1 (task set + `add_done_callback(discard)`), SIG-2 (`rebalance`→live, `print-rebalance`→preview, else drop; source `signal`) in `ably_service.py`.
+- §11 NTF-1..5 (`Notifier` ABC, `NotificationContext(kind, next_run)`, pure `render -> Message`, one message per result, `NtfyNotifier` posting to `https://ntfy.sh/<channel>` with `Title`/`Priority: default`/`Tags` at `aiohttp.ClientTimeout(total=10)`, failures logged never raised, disabled/no-channel skip at INFO; 3,500-byte body cap with `…and <k> more notes (see logs, run <run_id>)`; `_mask_account_id` and `_format_strategy_name` kept; `send_warnings` removed).
+- §12 REC-1..4 (`run_records.py`: parent appends one JSON line to `data/runs/<YYYY-MM-DD>.jsonl`, prunes `*.jsonl` older than 30 days, never touches other files, dir created, write failure logged and never affects outcome).
+- §13 BOOT-1 (`main.py` startup order), BOOT-2 (heartbeat touch), BOOT-5 (`cleanup()` with `wait=True, cancel_futures=True`).
+- §16.3 adaptation of `tests/test_security_startup.py`, and §16.2 test files `test_executor.py`, `test_scheduler.py`, `test_notifications.py`, `test_run_records.py`.
+
+**Tests added:** `test_executor.py` (7: every §10.5 row; scheduler-disabled `FAILED_FINAL`+RTY-1 line; dropped-while-running no notification; running-mark held in pool + released before notifications; BrokenProcessPool → `WORKER_CRASHED` + new pool; fork-context to `ProcessPoolExecutor`; cleanup shutdown args). `test_scheduler.py` (8: bad file untouched; missing file no-op; SCH-7 keeps IDs added during the job; duplicates run once; already-running → `SKIPPED_FINAL` + removal; misfire settings passed to `add_job`; disabled scheduler adds no job; atomic add/remove helpers incl. not clobbering an invalid file). `test_notifications.py` (8: SUCCESS header/key lines incl. masking and `≈` amounts; each kind's title + key line; preview order lines + `≤`/`(market)` + 20-line cap; 200-note body ≤ 3,500 bytes; long-body truncation with run id; what-happened lines; disabled/no-channel skip; one post/send with `ClientTimeout(total=10)`). `test_run_records.py` (4: one line per result; dir creation; pruning keeps 30 days + non-matching files; append-then-prune).
+
+**Not implemented here (by design):** §10.1 `MarketClock` was WP6; the `IBKRConnection` factory lives in the worker (`_connection_factory`, RUN-4) and is not unit-tested against a real Gateway (§0.4). `requirements-dev.txt`, fakes and `run_records` directory path: `_RUNS_DIR` in `main.py` defaults to `/app/data/runs` and is overridable via `RUNS_DIR` (not in the PRD — recorded deviation, see below).
+
+**Deviations / recorded problems (PRD §0.2 / §0.3):**
+- **RTY-1 line delivery.** §11.1 fixes `NotificationContext` to carry only `kind` and `next_run`; the RTY-1 extra line `Automatic retry is disabled (scheduler.enabled: false).` is therefore delivered by appending a `warning` note to the result in `StrategyExecutor._decision` before the `FAILED_FINAL` notification is rendered. This keeps the context shape exactly as specified.
+- **`RUNS_DIR` config.** Neither `config.yaml` nor `app-config` defines a runs-directory setting; §12.1 hardcodes `/app/data/runs`. `RunRecords` accepts a `directory` argument (needed for testability) and `main.py` defaults it to `/app/data/runs` with an optional `RUNS_DIR` env override. No config key was added to the strict schema (CFG-2 is untouched).
+- **`fork` context on the Windows dev machine.** `multiprocessing.get_context("fork")` (EXE-1) is unavailable on Windows, so a real fork pool cannot be constructed on this dev box. Production runs in the Docker/Linux container where fork is valid; the tests construct `StrategyExecutor` only under a mocked `get_context` and a `FakePool` (no subprocesses) and assert the fork context is passed to `ProcessPoolExecutor`. This keeps the spec's EXE-1 intact while staying green on Windows.
+- **WP5-deferred removal (ENV-1) completed here.** `StrategyExecutor._get_environment()` and the `os.environ` copying in `execute_strategy_batch` are removed in WP7; the worker receives a pickled `RuntimeSettings`. The old subprocess-forwarding test was replaced by `test_runtime_settings_masks_api_key_and_ignores_realtime_key`.
+- **Removed one legacy test** (`test_account_grouping_preserves_mode_enabled_and_strategy_filters`): accounts grouping moved out of `AblyEventSubscriber` into `app.accounts.load_accounts` / `main._strategies_by_name` (covered by WP5 `test_accounts.py` and the scheduler's `accounts_lookup` in this suite). Not one of the §16.3 keep-list behaviours.
+- **Worker logging.** WRK-2's handler is attached to a module logger named `worker` (one stdout handler, never added/removed per account); `rebalance_account` chains its own `LoggerAdapter` (run_id) onto the per-account adapter (strategy/account_id).
+
+**Not done / why:** nothing within §10.2-10.6 / §11 / §12 / §13 / §16.3. Legacy removals that belong to WP8 (§4.3: `pdt_protection_service.py`, `trading/broker_factory.py`, old `models.py`, `replacement-sets.yaml`, version bumps, README/AGENTS/docs/changelog) are deliberately untouched to keep the new WP7 modules importable and the baseline green.
+
+**Open questions:** none blocking. `RUNS_DIR` (deviation above) is offered as a small, non-schema setting for local testing; flag to Faisal whether a `config.yaml` `runs` path should be added instead.

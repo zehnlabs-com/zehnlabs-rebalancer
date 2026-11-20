@@ -1,4 +1,6 @@
-"""Local security/regression checks. All network and trading boundaries are fakes."""
+"""Local security/regression checks (PRD §16.3). All network and trading boundaries
+are fakes. The §16.3 behaviours are preserved, adapted to the WP7 module layout.
+"""
 
 import asyncio
 import importlib
@@ -6,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, mock_open, patch
@@ -22,18 +25,25 @@ from pydantic import ValidationError
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "event-broker"))
 
-from app.services import ably_service
-from app.services.ably_service import AblyEventSubscriber
-from app.services.strategy_executor import StrategyExecutor
-from app.services.scheduler_service import SchedulerService
-from app.services import trading_executor
-from ibkr_connector.allocation_service import AllocationService
+from app.accounts import AccountConfig  # noqa: E402
+from app.services import ably_service  # noqa: E402
+from app.services.ably_service import AblyEventSubscriber  # noqa: E402
+from app.services.scheduler_service import SchedulerService  # noqa: E402
+from app.settings import build_settings  # noqa: E402
+from fakes import FakeClock, RecordingNotifier  # noqa: E402
 
 ZEHNLABS_KEY = "AbC123.0123456789abcdefghijklmnopqrstuv"
 ABLY_KEY = "synthetic.readonly:synthetic-secret"
 DEFAULT_RESPONSE = object()
-ACCOUNT = {"account_id": "U100001", "type": "paper", "enabled": True,
-           "strategy_name": "strategy-one", "cash_reserve_percent": 1.0}
+ACCOUNT = AccountConfig(
+    account_id="U100001", type="paper", enabled=True, strategy_name="strategy-one"
+)
+STRATEGIES = {"strategy-one": [ACCOUNT]}
+
+
+def executor_stub():
+    """A minimal StrategyExecutor stand-in (execute is what signal/manual call)."""
+    return SimpleNamespace(execute=AsyncMock(return_value=None), running=set())
 
 
 class Response:
@@ -72,24 +82,26 @@ class Session:
         return self.response
 
 
-def subscriber():
+def subscriber(strategies=None):
     with patch.dict(os.environ, {"ALLOCATIONS_API_KEY": ZEHNLABS_KEY}, clear=True), \
          patch.object(ably_service, "get_config", return_value=AppConfig()):
-        return AblyEventSubscriber(strategy_executor=SimpleNamespace(execute_strategy=AsyncMock()))
+        return AblyEventSubscriber(
+            strategy_executor=executor_stub(),
+            strategies=dict(STRATEGIES) if strategies is None else strategies,
+        )
 
 
 class StartupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_startup_fetches_once_then_loads_accounts_and_uses_returned_key(self):
+    async def test_startup_fetches_key_once_then_subscribes_with_returned_key(self):
         sub = subscriber()
         session = Session(Response())
         channel = SimpleNamespace(subscribe=AsyncMock())
         sdk = SimpleNamespace(channels=SimpleNamespace(get=Mock(return_value=channel)),
                               connection=SimpleNamespace(on=Mock()))
         with patch.object(ably_service.aiohttp, "ClientSession", return_value=session), \
-             patch.object(ably_service, "AblyRealtime", return_value=sdk) as constructor, \
-             patch("builtins.open", mock_open(read_data=yaml.safe_dump({"accounts": [ACCOUNT]}))):
+             patch.object(ably_service, "AblyRealtime", return_value=sdk) as constructor:
             await sub.start()
-        self.assertEqual(sub.strategies, {"strategy-one": [ACCOUNT]})
+        self.assertEqual(sub.strategies, STRATEGIES)
         constructor.assert_called_once_with(ABLY_KEY)
         channel.subscribe.assert_awaited_once()
         self.assertEqual(session.requests[0][0], "https://workers.fintech.zehnlabs.com/api/v1/rebalance-auth")
@@ -99,19 +111,19 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(session.requests), 1)
         self.assertEqual(sdk.connection.on.call_count, 4)
 
-    async def test_missing_key_fails_before_accounts_or_sdk(self):
+    async def test_missing_key_fails_before_sdk(self):
         sub = subscriber()
         sub.zehnlabs_api_key = None
-        with patch.object(sub, "_load_accounts") as load, patch.object(ably_service, "AblyRealtime") as sdk:
+        with patch.object(ably_service, "AblyRealtime") as sdk:
             with self.assertRaisesRegex(ValueError, "ALLOCATIONS_API_KEY.* /api"):
                 await sub.start()
-        load.assert_not_called()
         sdk.assert_not_called()
+        self.assertIsNone(sub.ably)
 
     async def test_legacy_realtime_key_does_not_bypass_new_key(self):
         with patch.dict(os.environ, {"REALTIME_API_KEY": ABLY_KEY}, clear=True), \
              patch.object(ably_service, "get_config", return_value=AppConfig()):
-            sub = AblyEventSubscriber()
+            sub = AblyEventSubscriber(strategy_executor=executor_stub())
         with self.assertRaisesRegex(ValueError, "ALLOCATIONS_API_KEY"):
             await sub.start()
 
@@ -122,12 +134,11 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                 sub = subscriber()
                 session = Session(Response(status, {"error": ZEHNLABS_KEY + ABLY_KEY}))
                 with patch.object(ably_service.aiohttp, "ClientSession", return_value=session), \
-                     patch.object(sub, "_load_accounts") as load, patch.object(ably_service, "AblyRealtime") as sdk:
+                     patch.object(ably_service, "AblyRealtime") as sdk:
                     with self.assertRaisesRegex(RuntimeError, message) as error:
                         await sub.start()
                 self.assertNotIn(ZEHNLABS_KEY, str(error.exception))
                 self.assertNotIn(ABLY_KEY, str(error.exception))
-                load.assert_not_called()
                 sdk.assert_not_called()
                 self.assertEqual(len(session.requests), 1)
 
@@ -162,14 +173,15 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                         await subscriber().start()
                 sdk.assert_not_called()
 
-    async def test_no_eligible_accounts_keeps_loaded_map_without_sdk(self):
-        sub = subscriber()
-        with patch.object(sub, "_fetch_ably_key", AsyncMock(return_value=ABLY_KEY)), \
-             patch("builtins.open", mock_open(read_data="accounts: []")), \
+    async def test_no_strategies_fetches_key_once_then_skips_sdk(self):
+        sub = subscriber({})
+        session = Session(Response())
+        with patch.object(ably_service.aiohttp, "ClientSession", return_value=session), \
              patch.object(ably_service, "AblyRealtime") as sdk:
             await sub.start()
         self.assertEqual(sub.strategies, {})
         sdk.assert_not_called()
+        self.assertEqual(len(session.requests), 1)
 
     async def test_configured_timeout_is_used_for_total_startup_request(self):
         sub = subscriber()
@@ -178,17 +190,6 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(ably_service.aiohttp, "ClientSession", return_value=session):
             self.assertEqual(await sub._fetch_ably_key(), ABLY_KEY)
         self.assertEqual(session.requests[0][1]["timeout"].total, 7)
-
-    def test_account_grouping_preserves_mode_enabled_and_strategy_filters(self):
-        accounts = [ACCOUNT, {**ACCOUNT, "account_id": "U100002"},
-                    {**ACCOUNT, "account_id": "U100003", "enabled": False},
-                    {**ACCOUNT, "account_id": "U100004", "type": "live"},
-                    {**ACCOUNT, "account_id": "U100005", "strategy_name": ""}]
-        sub = subscriber()
-        with patch.dict(os.environ, {"TRADING_MODE": "paper"}, clear=True), \
-             patch("builtins.open", mock_open(read_data=yaml.safe_dump({"accounts": accounts}))):
-            sub._load_accounts()
-        self.assertEqual(sub.strategies, {"strategy-one": accounts[:2]})
 
     def test_api_root_derivation_and_invalid_bases(self):
         sub = subscriber()
@@ -216,15 +217,49 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 APIConfig(rebalance_auth_timeout_seconds=value)
 
-    async def test_event_payload_and_strategy_accounts_reach_same_executor(self):
+    async def test_event_payload_maps_exec_to_executor_as_live(self):
         sub = subscriber()
-        sub.strategy_executor.execute_strategy.return_value = {"results": [{"success": True}]}
         event = {"exec": "rebalance", "eventId": "synthetic-event"}
-        await sub._handle_strategy_event("strategy-one", [ACCOUNT], SimpleNamespace(data=json.dumps(event)))
-        sub.strategy_executor.execute_strategy.assert_awaited_once_with("strategy-one", [ACCOUNT], event)
-        sub.strategy_executor.execute_strategy.reset_mock()
-        await sub._handle_strategy_event("strategy-one", [ACCOUNT], SimpleNamespace(data={"eventId": "invalid"}))
-        sub.strategy_executor.execute_strategy.assert_not_called()
+        await sub._handle_strategy_event("strategy-one", SimpleNamespace(data=json.dumps(event)))
+        sub.strategy_executor.execute.assert_awaited_once_with(
+            "strategy-one", [ACCOUNT], "live", "signal"
+        )
+
+    async def test_event_payload_maps_print_rebalance_to_preview(self):
+        sub = subscriber()
+        await sub._handle_strategy_event(
+            "strategy-one",
+            SimpleNamespace(data={"exec": "print-rebalance", "eventId": "p"}),
+        )
+        sub.strategy_executor.execute.assert_awaited_once_with(
+            "strategy-one", [ACCOUNT], "preview", "signal"
+        )
+
+    async def test_invalid_event_payload_drops_without_executor_call(self):
+        sub = subscriber()
+        sub.strategy_executor.execute.reset_mock()
+        await sub._handle_strategy_event("strategy-one", SimpleNamespace(data={"eventId": "invalid"}))
+        sub.strategy_executor.execute.assert_not_called()
+        await sub._handle_strategy_event("strategy-one", SimpleNamespace(data={"exec": "unknown"}))
+        sub.strategy_executor.execute.assert_not_called()
+
+
+class BuildSettingsTests(unittest.TestCase):
+    def test_runtime_settings_masks_api_key_and_ignores_realtime_key(self):
+        with patch.dict(os.environ, {
+            "ALLOCATIONS_API_KEY": ZEHNLABS_KEY,
+            "REALTIME_API_KEY": ABLY_KEY,
+            "TRADING_MODE": "paper",
+        }, clear=True):
+            settings = build_settings()
+        self.assertEqual(settings.allocations_api_key, ZEHNLABS_KEY)
+        self.assertNotIn(ZEHNLABS_KEY, repr(settings))
+        self.assertNotIn(ABLY_KEY, repr(settings))
+
+    def test_missing_api_key_fails(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "ALLOCATIONS_API_KEY"):
+                build_settings()
 
 
 class ExecutionPreservationTests(unittest.IsolatedAsyncioTestCase):
@@ -234,8 +269,7 @@ class ExecutionPreservationTests(unittest.IsolatedAsyncioTestCase):
 
     def main_module(self):
         with patch.dict(os.environ, {"CONFIG_PATH": str(REPO / "config.yaml")}), \
-             patch("app.services.strategy_executor.StrategyExecutor"), \
-             patch("app.services.scheduler_service.SchedulerService"):
+             patch("app.services.strategy_executor.StrategyExecutor"):
             return importlib.import_module("app.main")
 
     def make_app(self):
@@ -243,11 +277,27 @@ class ExecutionPreservationTests(unittest.IsolatedAsyncioTestCase):
         app = main.EventBrokerApp.__new__(main.EventBrokerApp)
         app.config = AppConfig()
         app.running = False
-        app.strategy_executor = SimpleNamespace(execute_strategy=AsyncMock(return_value={"results": [{"success": True}]}))
+        app.settings = SimpleNamespace(
+            trading_mode="paper", ib_port=None,
+            allocations_base_url=DEFAULT_ALLOCATIONS_BASE_URL,
+            allocations_api_key=ZEHNLABS_KEY,
+            user_notifications_enabled=False, user_notifications_channel="",
+        )
+        app.registry = SimpleNamespace(
+            get=lambda i: ACCOUNT if i == "U100001" else None,
+            for_strategy=lambda s: [ACCOUNT],
+            strategies=lambda: ["strategy-one"],
+        )
+        app.clock = FakeClock(__import__("datetime").datetime(2026, 11, 20, 10, 0))
+        app.notifier = RecordingNotifier()
+        app.records = SimpleNamespace(prune=lambda: None, append=lambda r: None)
+        app.strategy_executor = executor_stub()
         app.ably_subscriber = subscriber()
         app.scheduler_service = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         app._run_forever = AsyncMock()
         app._watch_manual_events = AsyncMock()
+        app.manual_event_file = "/synthetic/manual/rebalance.json"
+        app._check_strategies = AsyncMock()
         return app
 
     async def test_main_waits_for_signal_shutdown(self):
@@ -283,15 +333,14 @@ class ExecutionPreservationTests(unittest.IsolatedAsyncioTestCase):
         order = []
 
         async def startup():
-            app.ably_subscriber.strategies = {"strategy-one": [ACCOUNT]}
             order.append("subscriber")
 
         async def scheduler():
-            self.assertEqual(app._find_account_by_id("U100001"), ACCOUNT)
+            self.assertIs(app._find_account_by_id("U100001"), ACCOUNT)
             order.append("scheduler")
 
         async def manual():
-            self.assertEqual(app._find_account_by_id("U100001"), ACCOUNT)
+            self.assertIs(app._find_account_by_id("U100001"), ACCOUNT)
             order.append("manual")
 
         app.ably_subscriber.start = startup
@@ -301,62 +350,57 @@ class ExecutionPreservationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(order, ["subscriber", "scheduler", "manual"])
         self.assertTrue(app.running)
 
+    async def test_strategy_availability_check_stops_startup(self):
+        main = self.main_module()
+        app = self.make_app()
+        del app._check_strategies  # use the real method
+
+        class FailingClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def fetch(self, strategy):
+                raise LookupError(f"{strategy} unavailable")
+
+        with patch.object(main, "AllocationsClient", FailingClient):
+            with self.assertRaisesRegex(
+                RuntimeError, "Strategy 'strategy-one' is not available " r".*Check the name"
+            ):
+                await app._check_strategies()
+
     async def test_manual_event_routes_loaded_account_to_executor(self):
         app = self.make_app()
-        app.ably_subscriber.strategies = {"strategy-one": [ACCOUNT]}
-        app.manual_event_file = "/synthetic/manual/rebalance.json"
         event = {"account_id": "U100001", "exec": "print-rebalance", "source": "manual"}
         with patch("builtins.open", mock_open(read_data=json.dumps(event))), \
              patch("app.main.os.remove") as remove:
             await app._process_manual_event()
         remove.assert_called_once_with(app.manual_event_file)
-        app.strategy_executor.execute_strategy.assert_awaited_once_with("strategy-one", [ACCOUNT], event)
+        app.strategy_executor.execute.assert_awaited_once_with(
+            "strategy-one", [ACCOUNT], "preview", "manual"
+        )
 
     async def test_scheduled_events_use_loaded_accounts_and_existing_payload(self):
         app = self.make_app()
-        app.ably_subscriber.strategies = {"strategy-one": [ACCOUNT]}
-        with patch("app.services.scheduler_service.xcals.get_calendar", return_value=Mock()):
-            scheduler = SchedulerService(app.strategy_executor, app._find_account_by_id)
-        with patch("builtins.open", mock_open(read_data=json.dumps(["U100001", "missing"]))), \
-             patch.object(scheduler, "_clear_scheduled_file") as clear:
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduled_file = os.path.join(tmp, "scheduled.json")
+            Path(scheduled_file).write_text(json.dumps(["U100001", "missing"]), encoding="utf-8")
+            scheduler = SchedulerService(
+                config=AppConfig(), strategy_executor=app.strategy_executor,
+                accounts_lookup=app.registry.get, clock=app.clock,
+                notifier=app.notifier, logger=None,
+            )
+            scheduler.scheduled_file = scheduled_file
             await scheduler._process_scheduled_accounts()
-        args = app.strategy_executor.execute_strategy.await_args.args
+        args = app.strategy_executor.execute.await_args.args
         self.assertEqual(args[:2], ("strategy-one", [ACCOUNT]))
-        self.assertEqual(args[2]["exec"], "rebalance")
-        self.assertEqual(args[2]["source"], "scheduled")
-        clear.assert_called_once()
-
-    def test_unified_key_and_base_are_forwarded_to_subprocess_without_ably_key(self):
-        executor = StrategyExecutor.__new__(StrategyExecutor)
-        with patch.dict(os.environ, {"ALLOCATIONS_API_KEY": ZEHNLABS_KEY,
-                                     "REALTIME_API_KEY": ABLY_KEY}, clear=True):
-            env = executor._get_environment()
-        self.assertEqual(env["ALLOCATIONS_API_KEY"], ZEHNLABS_KEY)
-        self.assertEqual(env["ALLOCATIONS_BASE_URL"], DEFAULT_ALLOCATIONS_BASE_URL)
-        self.assertNotIn("REALTIME_API_KEY", env)
-        result = SimpleNamespace(model_dump=lambda: {"status": "synthetic"})
-
-        async def fake_process(*args):
-            self.assertEqual(os.environ["ALLOCATIONS_API_KEY"], ZEHNLABS_KEY)
-            self.assertEqual(os.environ["ALLOCATIONS_BASE_URL"], DEFAULT_ALLOCATIONS_BASE_URL)
-            return result
-
-        with patch.dict(os.environ, {}, clear=True), \
-             patch.object(trading_executor, "process_strategy_accounts", fake_process):
-            self.assertEqual(trading_executor.execute_strategy_batch("strategy-one", [ACCOUNT], {}, env),
-                             {"status": "synthetic"})
-
-    async def test_allocation_requests_keep_opaque_key_and_success_contract(self):
-        response = Response(data={"status": "success", "data": {"allocations": [{"ticker": "VTI", "allocation": 100}]}})
-        session = Session(response)
-        with patch.dict(os.environ, {"ALLOCATIONS_API_KEY": ZEHNLABS_KEY,
-                                     "ALLOCATIONS_BASE_URL": DEFAULT_ALLOCATIONS_BASE_URL + "/"}, clear=True), \
-             patch("ibkr_connector.allocation_service.aiohttp.ClientSession", return_value=session):
-            allocations = await AllocationService().get_allocations(SimpleNamespace(strategy_name="strategy-one"))
-        self.assertEqual(session.requests[0][0], DEFAULT_ALLOCATIONS_BASE_URL + "/strategy-one/allocations")
-        self.assertEqual(session.requests[0][1]["headers"], {"x-api-key": ZEHNLABS_KEY})
-        self.assertEqual(allocations[0].symbol, "VTI")
-        self.assertEqual(allocations[0].allocation, 100)
+        self.assertEqual(args[2], "live")
+        self.assertEqual(args[3], "scheduled")
 
     def test_compose_and_examples_configure_one_key(self):
         compose = (REPO / "docker-compose.yaml").read_text(encoding="utf-8")
@@ -414,7 +458,7 @@ async def until(predicate):
 class RealSDKReconnectTests(unittest.IsolatedAsyncioTestCase):
     async def test_application_startup_and_three_sdk_reconnects_keep_key_channel_and_single_listener(self):
         sub = subscriber()
-        sub.strategy_executor.execute_strategy.return_value = {"results": [{"success": True}]}
+        sub.strategy_executor.execute.return_value = None
         session = Session(Response())
         sockets = []
         clients = []
@@ -446,8 +490,7 @@ class RealSDKReconnectTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(ably_service.aiohttp, "ClientSession", return_value=session), \
              patch.object(ably_service, "AblyRealtime", side_effect=construct), \
              patch("ably.transport.websockettransport.ws_connect", side_effect=connect), \
-             patch("httpx.AsyncClient", side_effect=sdk_http), \
-             patch("builtins.open", mock_open(read_data=yaml.safe_dump({"accounts": [ACCOUNT]}))):
+             patch("httpx.AsyncClient", side_effect=sdk_http):
             try:
                 await asyncio.wait_for(sub.start(), 2)
                 original_channel = sub.ably.channels.get("strategy-one")
@@ -461,13 +504,15 @@ class RealSDKReconnectTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(clients), 1)
                 self.assertEqual(len(sockets), 4)
                 self.assertIs(sub.ably.channels.get("strategy-one"), original_channel)
-                sub.strategy_executor.execute_strategy.assert_not_called()
+                sub.strategy_executor.execute.assert_not_called()
                 event = {"exec": "rebalance", "eventId": "synthetic-reconnect-event"}
                 sockets[-1].queue.put_nowait({"action": 15, "channel": "strategy-one",
                                              "messages": [{"name": "any-event-name", "data": event}]})
-                await until(lambda: sub.strategy_executor.execute_strategy.await_count == 1)
+                await until(lambda: sub.strategy_executor.execute.await_count == 1)
                 await asyncio.sleep(0.02)
-                sub.strategy_executor.execute_strategy.assert_awaited_once_with("strategy-one", [ACCOUNT], event)
+                sub.strategy_executor.execute.assert_awaited_once_with(
+                    "strategy-one", [ACCOUNT], "live", "signal"
+                )
             finally:
                 if sub.ably:
                     await asyncio.wait_for(sub.ably.close(), 1)
@@ -476,7 +521,7 @@ class RealSDKReconnectTests(unittest.IsolatedAsyncioTestCase):
 class ShutdownTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsubscribes_and_closes_connection(self):
         sub = subscriber()
-        sub.strategies = {"strategy-one": []}
+        sub.strategy_executor.execute.reset_mock()
         channel = SimpleNamespace(unsubscribe=Mock())
         sub.ably = SimpleNamespace(channels=SimpleNamespace(get=Mock(return_value=channel)), close=AsyncMock())
 

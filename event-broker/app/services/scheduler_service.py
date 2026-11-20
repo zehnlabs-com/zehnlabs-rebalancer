@@ -1,287 +1,232 @@
-"""Scheduler Service - Market open scheduled rebalancing"""
+"""Market-open job and schedule-file helpers (PRD §10.4–10.6, §12).
 
-import os
-import json
+Only the parent process writes the scheduled file. `read_schedule` / `write_schedule`
+/ `add_account` / `remove_accounts` are the atomic read-filter/append-write helpers used
+by both SCH-7 and RTY-2.
+"""
+
+from __future__ import annotations
+
 import asyncio
+import json
 import logging
+import os
 from collections import defaultdict
 from datetime import datetime
-from typing import Optional, Callable
+from typing import Callable, Collection, Optional
+from zoneinfo import ZoneInfo
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-import exchange_calendars as xcals
 
-from app_config import get_config
+from app_config import AppConfig
+
+from ..accounts import AccountConfig
+from ..market_clock import MarketClock
+from ..results import AccountRunResult, RunOutcome
+from .notification_service import (
+    Notifier,
+    NotificationContext,
+    NotificationKind,
+)
+
+_ET = ZoneInfo("America/New_York")
 
 
-def add_account_to_schedule(account_id: str, logger: Optional[logging.Logger] = None) -> bool:
-    """
-    Add an account to the scheduled.json file for next market-open rebalancing.
-
-    This utility function can be called from anywhere (e.g., PDT protection)
-    to auto-schedule an account for the next trading day.
-
-    Args:
-        account_id: The account ID to add to the schedule
-        logger: Optional logger instance
-
-    Returns:
-        True if account was added (or already scheduled), False on error
-    """
-    if logger is None:
-        logger = logging.getLogger(__name__)
-
+# --------------------------------------------------------------------------- #
+# Schedule-file helpers (RTY-2 / SCH-7): atomic read-filter/append-write.
+# --------------------------------------------------------------------------- #
+def read_schedule(path: str, logger: logging.Logger) -> Optional[list[str]]:
+    """Read the scheduled file. Missing -> []. Malformed -> None (leave untouched)."""
+    if not os.path.exists(path):
+        return []
     try:
-        config = get_config()
-        scheduled_file = config.scheduler.scheduled_file_path
-
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(scheduled_file), exist_ok=True)
-
-        # Read current scheduled accounts
-        if os.path.exists(scheduled_file):
-            with open(scheduled_file, 'r') as f:
-                account_ids = json.load(f)
-                if not isinstance(account_ids, list):
-                    account_ids = []
-        else:
-            account_ids = []
-
-        # Check if already scheduled
-        if account_id in account_ids:
-            logger.debug(f"Account {account_id} is already scheduled for market-open rebalance")
-            return True
-
-        # Add account
-        account_ids.append(account_id)
-
-        # Write back atomically
-        temp_file = scheduled_file + '.tmp'
-        with open(temp_file, 'w') as f:
-            json.dump(account_ids, f)
-        os.replace(temp_file, scheduled_file)
-
-        logger.info(f"Auto-scheduled {account_id} for next market-open rebalance")
-        return True
-
-    except Exception as e:
-        if logger:
-            logger.error(f"Failed to auto-schedule {account_id}: {e}")
-        return False
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("Invalid scheduled file %s: %s", path, exc)
+        return None
+    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+        logger.error("Scheduled file %s is not a JSON array of strings", path)
+        return None
+    return data
 
 
+def write_schedule(path: str, ids: Collection[str]) -> None:
+    """Atomic write: `<file>.tmp` then `os.replace`."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(list(ids), f)
+    os.replace(tmp, path)
+
+
+def add_account(path: str, account_id: str, logger: logging.Logger) -> None:
+    """Add an account ID if not present; atomic write. Never clobber a malformed file."""
+    ids = read_schedule(path, logger)
+    if ids is None:
+        logger.error("Not adding %s: scheduled file %s is invalid", account_id, path)
+        return
+    if account_id not in ids:
+        ids.append(account_id)
+        try:
+            write_schedule(path, ids)
+        except OSError as exc:
+            logger.error("Failed to schedule %s: %s", account_id, exc)
+
+
+def remove_accounts(path: str, account_ids: Collection[str], logger: logging.Logger) -> None:
+    """Remove the given IDs if present; atomic write only when something changes."""
+    ids = read_schedule(path, logger)
+    if ids is None:
+        logger.error("Not removing %s: scheduled file %s is invalid", list(account_ids), path)
+        return
+    drop = set(account_ids)
+    remaining = [x for x in ids if x not in drop]
+    if remaining == ids:
+        return
+    try:
+        write_schedule(path, remaining)
+    except OSError as exc:
+        logger.error("Failed to update schedule: %s", exc)
+
+
+# --------------------------------------------------------------------------- #
+# Scheduler service
+# --------------------------------------------------------------------------- #
 class SchedulerService:
-    """
-    Handles scheduled rebalancing at market open.
+    """SCH-1..8: the market-open job over the scheduled-file accounts."""
 
-    This service runs a scheduled job at the configured market open time (default 9:30 AM ET)
-    on trading days (Mon-Fri, excluding NYSE holidays). It reads accounts from the scheduled
-    file, groups them by strategy, and executes strategies in parallel.
-
-    The container runs with TZ=America/New_York, so datetime.now() returns ET time.
-    """
-
-    def __init__(self, strategy_executor, accounts_lookup: Callable, logger: Optional[logging.Logger] = None):
-        """
-        Initialize the scheduler service.
-
-        Args:
-            strategy_executor: The StrategyExecutor instance for executing rebalances
-            accounts_lookup: Function that takes account_id and returns account dict or None
-            logger: Optional logger instance
-        """
-        self.config = get_config()
-        self.logger = logger or logging.getLogger(__name__)
+    def __init__(
+        self,
+        *,
+        config: AppConfig,
+        strategy_executor,
+        accounts_lookup: Callable[[str], Optional[AccountConfig]],
+        clock: MarketClock,
+        notifier: Notifier,
+        logger: Optional[logging.Logger] = None,
+    ):
+        self.config = config
         self.strategy_executor = strategy_executor
         self.accounts_lookup = accounts_lookup
+        self.clock = clock
+        self.notifier = notifier
+        self.logger = logger or logging.getLogger(__name__)
         self.scheduler: Optional[AsyncIOScheduler] = None
-        self.nyse = xcals.get_calendar("NYSE")
-        self.scheduled_file = self.config.scheduler.scheduled_file_path
+        self.scheduled_file = config.scheduler.scheduled_file_path
         self.running = False
 
-    def _ensure_scheduled_file_exists(self):
-        """Ensure the scheduled file directory and file exist at startup."""
-        try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(self.scheduled_file), exist_ok=True)
-
-            # Create empty file if it doesn't exist
-            if not os.path.exists(self.scheduled_file):
-                with open(self.scheduled_file, 'w') as f:
-                    json.dump([], f)
-                self.logger.info(f"Created scheduled file: {self.scheduled_file}")
-            else:
-                self.logger.debug(f"Scheduled file exists: {self.scheduled_file}")
-        except Exception as e:
-            self.logger.error(f"Failed to ensure scheduled file exists: {e}")
-            raise
-
-    async def start(self):
-        """Start the scheduler."""
+    # ------------------------------------------------------------------ #
+    async def start(self) -> None:
         if not self.config.scheduler.enabled:
             self.logger.info("Scheduler is disabled in configuration")
             return
-
-        # Ensure scheduled file exists at startup
-        self._ensure_scheduled_file_exists()
-
-        # APScheduler uses system timezone (container has TZ=America/New_York)
         self.scheduler = AsyncIOScheduler()
-
-        # Parse market open time from config (e.g., "09:30")
-        hour, minute = self.config.scheduler.market_open_time.split(':')
-
+        hour, minute = self.config.scheduler.market_open_time.split(":")
         self.scheduler.add_job(
             self._execute_scheduled_rebalance,
-            CronTrigger(
-                hour=int(hour),
-                minute=int(minute),
-                day_of_week='mon-fri'
-            ),
-            id='market_open_rebalance',
-            name='Market Open Rebalance'
+            CronTrigger(day_of_week="mon-fri", hour=int(hour), minute=int(minute)),
+            id="market_open_rebalance",
+            name="Market Open Rebalance",
+            misfire_grace_time=300,
+            coalesce=True,
+            max_instances=1,
         )
-
         self.scheduler.start()
         self.running = True
-        self.logger.info(f"Scheduler started - market open rebalance at {hour}:{minute} ET (Mon-Fri)")
+        self.logger.info("Scheduler started - market open rebalance at %s ET (Mon-Fri)",
+                         self.config.scheduler.market_open_time)
 
-    async def stop(self):
-        """Stop the scheduler gracefully."""
+    async def stop(self) -> None:
         if self.scheduler and self.running:
             self.scheduler.shutdown(wait=False)
             self.running = False
             self.logger.info("Scheduler stopped")
 
-    def _is_trading_day(self, date) -> bool:
-        """
-        Check if date is a valid NYSE trading day.
-
-        Args:
-            date: The date to check
-
-        Returns:
-            True if the date is a trading day, False otherwise
-        """
-        try:
-            return self.nyse.is_session(date.strftime('%Y-%m-%d'))
-        except Exception as e:
-            self.logger.error(f"Error checking trading day: {e}")
-            return False  # Fail-safe: don't execute on error
-
-    async def _execute_scheduled_rebalance(self):
-        """Execute scheduled rebalance if it's a trading day."""
-        # Container runs with TZ=America/New_York, so datetime.now() is already ET
-        today = datetime.now().date()
-
-        # Skip weekends/holidays
-        if not self._is_trading_day(today):
-            self.logger.info(f"Skipping scheduled rebalance - {today} is not a trading day")
+    # ------------------------------------------------------------------ #
+    async def _execute_scheduled_rebalance(self) -> None:
+        today = self.clock.now().date()
+        if not self.clock.is_trading_day(today):  # SCH-2
+            self.logger.info("%s is not a trading day; keeping scheduled entries", today)
             return
-
         await self._process_scheduled_accounts()
 
-    async def _process_scheduled_accounts(self):
-        """Process all scheduled accounts, grouped by strategy for parallel execution."""
-        try:
-            # Read scheduled accounts
-            with open(self.scheduled_file, 'r') as f:
-                account_ids = json.load(f)
+    async def _process_scheduled_accounts(self) -> None:
+        original = read_schedule(self.scheduled_file, self.logger)
+        if original is None:
+            self.logger.error("Scheduled file invalid; leaving it untouched")
+            return
 
-            if not account_ids or not isinstance(account_ids, list):
-                self.logger.info("Scheduled file is empty or invalid")
-                self._clear_scheduled_file()
-                return
+        # SCH-3: remove duplicate IDs (keep first occurrence).
+        ids: list[str] = []
+        seen: set[str] = set()
+        for x in original:
+            if x not in seen:
+                seen.add(x)
+                ids.append(x)
+        if not ids:
+            return
 
-            self.logger.info(f"Processing {len(account_ids)} scheduled accounts")
+        # SCH-4: unknown/disabled/other-mode IDs are warnings and treated as processed.
+        groups: dict[str, list[AccountConfig]] = defaultdict(list)
+        for aid in ids:
+            acct = self.accounts_lookup(aid)
+            if acct is None:
+                self.logger.warning("Scheduled account %s not found; treating as processed", aid)
+            else:
+                groups[acct.strategy_name].append(acct)
 
-            # Group accounts by strategy (using defaultdict for cleaner grouping)
-            strategies = defaultdict(list)
-            skipped = []
-            for account_id in account_ids:
-                account = self.accounts_lookup(account_id)
-                if not account:
-                    self.logger.warning(f"Account {account_id} not found in configuration, skipping")
-                    skipped.append(account_id)
-                    continue
-                strategies[account['strategy_name']].append(account)
+        # SCH-5: run every strategy's scheduled batch concurrently.
+        tasks = [
+            self.strategy_executor.execute(s, accts, "live", "scheduled")
+            for s, accts in groups.items()
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for (s, accts), res in zip(groups.items(), results):
+            if isinstance(res, Exception):
+                self.logger.error("Scheduled strategy %s crashed: %s", s, res)
+                continue
+            if res is None:  # SCH-6: already running -> SKIPPED_FINAL
+                for acct in accts:
+                    await self._skipped_final(acct)
+                continue
 
-            if not strategies:
-                self.logger.info("No valid accounts to process")
-                self._clear_scheduled_file()
-                return
+        # SCH-7: remove only the processed IDs; IDs added while the job ran survive.
+        processed = set(ids)
+        current = read_schedule(self.scheduled_file, self.logger)
+        if current is None:
+            return
+        remaining = [x for x in current if x not in processed]
+        if remaining != current:
+            try:
+                write_schedule(self.scheduled_file, remaining)
+            except OSError as exc:
+                self.logger.error("Failed to write scheduled file: %s", exc)
 
-            # Log strategy breakdown
-            for strategy_name, accounts in strategies.items():
-                account_ids_str = ', '.join(acc['account_id'] for acc in accounts)
-                self.logger.info(f"Strategy '{strategy_name}': {len(accounts)} accounts ({account_ids_str})")
-
-            # Build event data
-            event_data = {
-                'exec': 'rebalance',
-                'source': 'scheduled',
-                'timestamp': datetime.now().isoformat()
-            }
-
-            # Execute all strategies in parallel (follows trading_executor asyncio.gather pattern)
-            tasks = [
-                self.strategy_executor.execute_strategy(strategy_name, accounts, event_data)
-                for strategy_name, accounts in strategies.items()
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Process results and log summary (follows strategy_executor logging pattern)
-            total_successful = 0
-            total_failed = 0
-            for (strategy_name, accounts), result in zip(strategies.items(), results):
-                if isinstance(result, Exception):
-                    self.logger.error(f"Strategy {strategy_name} failed completely: {result}")
-                    total_failed += len(accounts)
-                elif result.get('status') == 'already_running':
-                    self.logger.warning(f"Strategy {strategy_name} was already running, skipped")
-                    total_failed += len(accounts)
-                else:
-                    account_results = result.get('results', [])
-                    successful = sum(1 for r in account_results if r.get('success', False))
-                    failed = len(account_results) - successful
-                    total_successful += successful
-                    total_failed += failed
-
-            self.logger.info(
-                f"Scheduled rebalance complete: {total_successful} successful, "
-                f"{total_failed} failed, {len(skipped)} skipped"
-            )
-
-            # Clear the scheduled file after processing
-            self._clear_scheduled_file()
-
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Invalid JSON in scheduled file: {e}")
-            self._clear_scheduled_file()
-        except Exception as e:
-            self.logger.error(f"Error processing scheduled accounts: {e}")
-
-    def _clear_scheduled_file(self):
-        """Clear the scheduled file after processing."""
-        try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(self.scheduled_file), exist_ok=True)
-            # Write empty array
-            with open(self.scheduled_file, 'w') as f:
-                json.dump([], f)
-            self.logger.info("Cleared scheduled.json file")
-        except Exception as e:
-            self.logger.error(f"Failed to clear scheduled file: {e}")
+    async def _skipped_final(self, acct: AccountConfig) -> None:
+        """SCH-6: one SKIPPED_FINAL notification for a dropped scheduled account."""
+        now = self.clock.now()
+        run_id = f"{now.astimezone(_ET):%Y%m%d-%H%M%S}-{acct.account_id}"
+        result = AccountRunResult(
+            run_id=run_id,
+            account_id=acct.account_id,
+            strategy_name=acct.strategy_name,
+            mode="live",
+            source="scheduled",
+            outcome=RunOutcome.FAILED,
+            record={"run_id": run_id, "account_id": acct.account_id,
+                    "strategy_name": acct.strategy_name,
+                    "started_at": now.astimezone(_ET).isoformat(),
+                    "outcome": RunOutcome.FAILED.value},
+        )
+        await self.notifier.send(
+            result, NotificationContext(kind=NotificationKind.SKIPPED_FINAL, next_run=now)
+        )
 
     def get_next_run_time(self) -> Optional[str]:
-        """
-        Get the next scheduled run time.
-
-        Returns:
-            ISO format string of next run time, or None if scheduler not running
-        """
         if self.scheduler and self.running:
-            job = self.scheduler.get_job('market_open_rebalance')
+            job = self.scheduler.get_job("market_open_rebalance")
             if job and job.next_run_time:
                 return job.next_run_time.isoformat()
         return None

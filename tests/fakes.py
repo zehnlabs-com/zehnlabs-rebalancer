@@ -231,11 +231,11 @@ class FakeBrokerConnection(BrokerConnection):
 # --------------------------------------------------------------------------- #
 # RecordingNotifier
 # --------------------------------------------------------------------------- #
-class RecordingNotifier:
-    """Records every `send()` call (PRD §16.1). Never performs I/O.
+from app.services.notification_service import Notifier  # noqa: E402
 
-    WP7 makes this subclass the `Notifier` ABC.
-    """
+
+class RecordingNotifier(Notifier):
+    """Records every `send()` call (PRD §16.1). Never performs I/O."""
 
     def __init__(self) -> None:
         self.sends: list[tuple[Any, Any]] = []

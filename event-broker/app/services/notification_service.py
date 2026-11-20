@@ -1,265 +1,295 @@
-"""Notification Service - Sends ntfy notifications for account rebalancing results"""
+"""Notifications (PRD §11).
 
-import os
+`Notifier` is the ABC; `NtfyNotifier` sends to ntfy.sh. Rendering is the pure
+`render(result, context) -> Message` so it is testable without HTTP.
+"""
+
+from __future__ import annotations
+
 import logging
-from typing import Optional, Dict, Any, List
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
-import re
+from enum import Enum
+from typing import Optional
+
 import aiohttp
+
+from ..results import AccountRunResult
+
+logger = logging.getLogger(__name__)
+
+_NTFY_URL = "https://ntfy.sh"
+_MAX_BODY_BYTES = 3500
+
+
+class NotificationKind(str, Enum):
+    SUCCESS = "SUCCESS"
+    FAILED_WILL_RETRY = "FAILED_WILL_RETRY"
+    QUEUED_MARKET_CLOSED = "QUEUED_MARKET_CLOSED"
+    FAILED_FINAL = "FAILED_FINAL"
+    SKIPPED_FINAL = "SKIPPED_FINAL"
+    PREVIEW = "PREVIEW"
+    PREVIEW_FAILED = "PREVIEW_FAILED"
+
+
+@dataclass
+class NotificationContext:
+    """Extra context for a notification (PRD §11.1)."""
+
+    kind: NotificationKind
+    next_run: Optional[datetime] = None
+
+
+@dataclass
+class Message:
+    title: str
+    body: str
+    tags: list[str]
 
 
 def _mask_account_id(account_id: str) -> str:
     """Mask the first three digits of an account ID (e.g., U123456 -> U***456)."""
-    match = re.search(r'\d{3}', account_id)
+    import re
+    match = re.search(r"\d{3}", account_id)
     if not match:
         return account_id
     start, end = match.span()
-    return account_id[:start] + '***' + account_id[end:]
+    return account_id[:start] + "***" + account_id[end:]
 
 
 def _format_strategy_name(strategy_slug: str) -> str:
     """Convert a strategy slug to its display name (e.g., etf-blend-301-20 -> ETF Blend 301-20)."""
     parts = []
-    for part in strategy_slug.split('-'):
+    for part in strategy_slug.split("-"):
         if part.isdigit() and parts and parts[-1].isdigit():
-            parts.append(f'{parts.pop()}-{part}')
+            parts.append(f"{parts.pop()}-{part}")
         elif part.isdigit():
             parts.append(part)
-        elif len(part) <= 4:  # ponytail: acronym heuristic (etf -> ETF); replace with explicit name map if varied strategies appear
+        elif len(part) <= 4:  # ponytail: acronym heuristic (etf -> ETF)
             parts.append(part.upper())
         else:
             parts.append(part.title())
-    return ' '.join(parts)
+    return " ".join(parts)
 
 
-class NotificationService:
-    """Handles sending notifications via ntfy for rebalancing events"""
-
-    def __init__(self, logger: Optional[logging.Logger] = None):
-        self.logger = logger or logging.getLogger(__name__)
-        self.enabled = os.getenv('USER_NOTIFICATIONS_ENABLED', 'false').lower() == 'true'
-        self.channel_name = os.getenv('USER_NOTIFICATIONS_CHANNEL', '')
-        self.ntfy_url = "https://ntfy.sh"
-
-    async def send_account_notification(
-        self,
-        account_id: str,
-        strategy_name: str,
-        operation: str,
-        timestamp: str,
-        success: bool,
-        error: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        """Send notification for an account rebalancing result"""
-
-        self.logger.debug(f"send_account_notification called: enabled={self.enabled}, channel={self.channel_name}")
-
-        if not self.enabled:
-            self.logger.info("Notifications disabled, skipping")
-            return
-
-        if not self.channel_name:
-            self.logger.warning("USER_NOTIFICATIONS_CHANNEL not set, skipping notification")
-            return
-
+def _time_str(result: AccountRunResult) -> str:
+    started = result.record.get("started_at")
+    if started:
         try:
-            self.logger.info(f"Sending {'SUCCESS' if success else 'FAILURE'} notification for {account_id}")
-            if success:
-                await self._send_success_notification(
-                    account_id, strategy_name, operation, timestamp, details
-                )
-            else:
-                await self._send_failure_notification(
-                    account_id, strategy_name, operation, timestamp, error
-                )
-            self.logger.info(f"Notification sent successfully for {account_id}")
-        except Exception as e:
-            self.logger.error(f"Failed to send notification for {account_id}: {e}")
+            return datetime.fromisoformat(started).strftime("%Y-%m-%d %H:%M:%S ET")
+        except (TypeError, ValueError):
+            pass
+    return ""
 
-    async def _send_success_notification(
-        self,
-        account_id: str,
-        strategy_name: str,
-        operation: str,
-        timestamp: str,
-        details: Optional[Dict[str, Any]]
-    ):
-        """Send success notification with snapshot data"""
 
-        # Format timestamp
-        try:
-            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            time_str = dt.strftime('%Y-%m-%d %H:%M:%S ET')
-        except:
-            time_str = timestamp
+def _money(value: Optional[float]) -> str:
+    return "$unknown" if value is None else f"${value:,.2f}"
 
-        # Build message body
-        message_lines = [
-            f"Account: {_mask_account_id(account_id)}",
-            f"Strategy: {_format_strategy_name(strategy_name)}",
-            f"Operation: {operation}",
-            f"Time: {time_str}",
-            ""
-        ]
 
-        if details:
-            if operation == 'rebalance':
-                trades_count = details.get('trades_executed', 0)
-                total_value = details.get('total_value', 0)
-                cash_balance = details.get('cash_balance')
-                message_lines.append(f"Trades Executed: {trades_count}")
-                message_lines.append(f"Portfolio Value: ${total_value:,.2f}")
-                if cash_balance is not None:
-                    message_lines.append(f"Cash Balance: ${cash_balance:,.2f}")
-            elif operation == 'print-rebalance':
-                proposed_count = details.get('proposed_trades', 0)
-                current_value = details.get('current_value', 0)
-                message_lines.append(f"Proposed Trades: {proposed_count}")
-                message_lines.append(f"Current Value: ${current_value:,.2f}")
+def _fmt_run_time(dt: datetime) -> str:
+    return f"{dt:%A} {dt:%Y-%m-%d} {dt:%H:%M}"
 
-        message = "\n".join(message_lines)
-        title = f"✅ {operation.replace('-', ' ').title()} Success"
 
-        await self._send_ntfy(
-            title=title,
-            message=message,
-            priority="default",
-            tags=["white_check_mark"]
-        )
+def _header(result: AccountRunResult) -> list[str]:
+    return [
+        f"Account: {_mask_account_id(result.account_id)}",
+        f"Strategy: {_format_strategy_name(result.strategy_name)}",
+        f"Time: {_time_str(result)}",
+        f"Run: {result.run_id}",
+        "",
+    ]
 
-    async def _send_failure_notification(
-        self,
-        account_id: str,
-        strategy_name: str,
-        operation: str,
-        timestamp: str,
-        error: Optional[str]
-    ):
-        """Send failure notification with error details"""
 
-        # Format timestamp
-        try:
-            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            time_str = dt.strftime('%Y-%m-%d %H:%M:%S ET')
-        except:
-            time_str = timestamp
+def _note_lines(result: AccountRunResult) -> list[str]:
+    lines = []
+    for note in result.notes:
+        text = note.text.strip()
+        if text:
+            lines.append(text)
+    return lines
 
-        # Detect PDT Protection errors for special handling
-        is_pdt_error = error and "PDT Protection" in error
-        is_auto_scheduled = error and "Auto-scheduled" in error
 
-        # Build message body
-        message_lines = [
-            f"Account: {_mask_account_id(account_id)}",
-            f"Strategy: {_format_strategy_name(strategy_name)}",
-            f"Operation: {operation}",
-            f"Time: {time_str}",
-            "",
-            f"{'Reason' if is_pdt_error else 'Error'}: {error or 'Unknown error'}"
-        ]
-
-        message = "\n".join(message_lines)
-
-        # Use different title and emoji for PDT protection
-        if is_pdt_error:
-            if is_auto_scheduled:
-                title = f"🗓️ PDT - Auto-Scheduled"
-                tags = ["calendar", "shield"]
-            else:
-                title = f"🛡️ PDT Protection Active"
-                tags = ["shield", "warning"]
+def _what_happened(result: AccountRunResult) -> str:
+    """PRD §11.3 'what happened' line (RUN-1)."""
+    filled = [e for e in result.executed if e.filled_quantity and e.filled_quantity > 0]
+    if not filled:
+        return "Nothing was traded."
+    parts = []
+    for e in filled:
+        verb = "SOLD" if e.side == "SELL" else "BOUGHT"
+        if abs(float(e.filled_quantity) - float(e.quantity)) < 1e-9:
+            avg = e.average_fill_price
+            avg_str = f" @ ${avg:,.2f}" if avg is not None else ""
+            parts.append(f"{verb} {int(e.filled_quantity)} {e.symbol}{avg_str}")
         else:
-            title = f"❌ {operation.replace('-', ' ').title()} Failed"
-            tags = ["x"]
+            parts.append(f"{verb} {int(e.filled_quantity)} of {int(e.quantity)} {e.symbol}")
+    body = "Already done: " + ", ".join(parts)
+    if result.planned_buys:
+        body += "; BUY orders did not complete."
+    return body
 
-        await self._send_ntfy(
-            title=title,
-            message=message,
-            priority="default",
-            tags=tags
-        )
 
-    async def send_warnings(
+def _count(result: AccountRunResult) -> tuple[int, int]:
+    sells = sum(1 for e in result.executed if e.side == "SELL")
+    buys = sum(1 for e in result.executed if e.side == "BUY")
+    return sells, buys
+
+
+def _order_line(symbol: str, side: str, quantity: float, limit: Optional[float]) -> str:
+    if side == "SELL":
+        return f"SELL {int(quantity)} {symbol} (market)"
+    if limit is None:
+        return f"BUY {int(quantity)} {symbol}"
+    return f"BUY {int(quantity)} {symbol} ≤ ${limit:,.2f}"
+
+
+def _content(result: AccountRunResult, context: NotificationContext) -> list[str]:
+    kind = context.kind
+    next_run = context.next_run
+
+    if kind == NotificationKind.SUCCESS:
+        sells, buys = _count(result)
+        return [
+            f"Orders: {sells} sells, {buys} buys",
+            f"Portfolio value ≈ {_money(result.value_end)}",
+            f"Cash ≈ {_money(result.cash_end)}",
+        ] + _note_lines(result)
+
+    if kind == NotificationKind.FAILED_WILL_RETRY:
+        retry = f"{_fmt_run_time(next_run)} ET" if next_run else "next market open ET"
+        return [
+            f"Error: {result.error_message or 'unknown error'}",
+            _what_happened(result),
+            f"Retry: {retry} (next market open).",
+        ] + _note_lines(result)
+
+    if kind == NotificationKind.QUEUED_MARKET_CLOSED:
+        will = f"{_fmt_run_time(next_run)} ET" if next_run else "next market open ET"
+        return ["No orders were placed.", f"Will run: {will}."]
+
+    if kind == NotificationKind.FAILED_FINAL:
+        return [
+            f"Error: {result.error_message or 'unknown error'}",
+            _what_happened(result),
+            "This account will not be retried automatically. Fix the issue, then run: "
+            f"./tools/rebalance.sh -account {result.account_id} -exec rebalance",
+        ] + _note_lines(result)
+
+    if kind == NotificationKind.SKIPPED_FINAL:
+        at = f"{_fmt_run_time(next_run)}" if next_run else "market open"
+        return [
+            f"The strategy was already running at {at}, so this scheduled run was skipped "
+            "and will not be retried. Run it manually if needed."
+        ]
+
+    if kind == NotificationKind.PREVIEW:
+        all_orders = list(result.planned_sells) + list(result.planned_buys)
+        shown = 0
+        order_lines = []
+        for o in all_orders:
+            if shown >= 20:
+                order_lines.append(f"…and {len(all_orders) - shown} more")
+                break
+            order_lines.append(_order_line(o.symbol, o.side, o.quantity, o.limit_price))
+            shown += 1
+        return [f"Planned: {len(result.planned_sells)} sells, {len(result.planned_buys)} buys"] \
+            + order_lines + [
+            f"Portfolio value ≈ {_money(result.value_end)}",
+        ] + _note_lines(result)
+
+    if kind == NotificationKind.PREVIEW_FAILED:
+        return [f"Error: {result.error_message or 'unknown error'}"]
+
+    return []
+
+
+def _cap_body(lines: list[str], run_id: str) -> str:
+    """NTF-4: the body is at most 3,500 UTF-8 bytes."""
+    body = "\n".join(lines)
+    if len(body.encode("utf-8")) <= _MAX_BODY_BYTES:
+        return body
+    kept: list[str] = []
+    size = 0
+    for line in lines:
+        add = len(line.encode("utf-8")) + (1 if kept else 0)
+        if size + add > _MAX_BODY_BYTES:
+            break
+        size += add
+        kept.append(line)
+    dropped = len(lines) - len(kept)
+    ending = f"…and {dropped} more notes (see logs, run {run_id})"
+    while kept and len(("\n".join(kept) + "\n" + ending).encode("utf-8")) > _MAX_BODY_BYTES:
+        kept.pop()
+        dropped += 1
+    return "\n".join(kept) + "\n" + ending
+
+
+_TITLE_TAGS = {
+    NotificationKind.SUCCESS: ("✅ Rebalance complete", ["white_check_mark"]),
+    NotificationKind.FAILED_WILL_RETRY: ("⚠️ Rebalance failed: will retry", ["warning"]),
+    NotificationKind.QUEUED_MARKET_CLOSED: ("🕒 Market closed: rebalance queued", ["hourglass"]),
+    NotificationKind.FAILED_FINAL: ("❌ Rebalance failed: not retried", ["x"]),
+    NotificationKind.SKIPPED_FINAL: ("❌ Scheduled rebalance skipped", ["x"]),
+    NotificationKind.PREVIEW: ("🔎 Rebalance preview", ["mag"]),
+    NotificationKind.PREVIEW_FAILED: ("❌ Rebalance preview failed", ["x"]),
+}
+
+
+def render(result: AccountRunResult, context: NotificationContext) -> Message:
+    """Pure rendering (NTF-1)."""
+    title, tags = _TITLE_TAGS.get(context.kind, ("Rebalance notification", []))
+    body_lines = _header(result) + _content(result, context)
+    return Message(title=title, body=_cap_body(body_lines, result.run_id), tags=tags)
+
+
+class Notifier(ABC):
+    """NTF-1."""
+
+    @abstractmethod
+    async def send(self, result: AccountRunResult, context: NotificationContext) -> None:
+        raise NotImplementedError
+
+
+class NtfyNotifier(Notifier):
+    """NTF-1..5: one message per result, sent to `ntfy.sh/<channel>`."""
+
+    def __init__(
         self,
-        account_id: str,
-        strategy_name: str,
-        operation: str,
-        warnings: List[str]
+        enabled: bool,
+        channel: str,
+        logger: Optional[logging.Logger] = None,
     ):
-        """Send warning notifications for an account"""
+        self._enabled = enabled
+        self._channel = channel
+        self._log = logger or logging.getLogger(__name__)
 
-        if not self.enabled:
-            self.logger.info("Notifications disabled, skipping warnings")
+    async def send(self, result: AccountRunResult, context: NotificationContext) -> None:
+        if not self._enabled:
+            self._log.info("Notifications disabled; skipping")
             return
-
-        if not self.channel_name:
-            self.logger.warning("USER_NOTIFICATIONS_CHANNEL not set, skipping warning notification")
+        if not self._channel:
+            self._log.info("USER_NOTIFICATIONS_CHANNEL not set; skipping")
             return
-
-        if not warnings:
-            return
-
+        message = render(result, context)
         try:
-            self.logger.info(f"Sending {len(warnings)} warning(s) for {account_id}")
+            await self._post(message)
+        except Exception as exc:  # noqa: BLE001 - NTF-3: failures are logged, never raised
+            self._log.error("Failed to send notification for %s: %s",
+                            result.account_id, exc)
 
-            message_lines = [
-                f"Account: {_mask_account_id(account_id)}",
-                f"Strategy: {_format_strategy_name(strategy_name)}",
-                f"Operation: {operation}",
-                "",
-                "Warnings:",
-                ""
-            ]
-
-            for i, warning in enumerate(warnings, 1):
-                if len(warnings) > 1:
-                    message_lines.append(f"{i}. {warning}")
-                else:
-                    message_lines.append(warning)
-                message_lines.append("")
-
-            message = "\n".join(message_lines)
-            title = f"⚠️ {operation.replace('-', ' ').title()} Warnings"
-
-            await self._send_ntfy(
-                title=title,
-                message=message,
-                priority="default",
-                tags=["warning"]
-            )
-
-            self.logger.info(f"Warning notification sent successfully for {account_id}")
-        except Exception as e:
-            self.logger.error(f"Failed to send warning notification for {account_id}: {e}")
-
-    async def _send_ntfy(
-        self,
-        title: str,
-        message: str,
-        priority: str = "default",
-        tags: Optional[list] = None
-    ):
-        """Send notification via ntfy.sh"""
-
-        topic = self.channel_name
-        url = f"{self.ntfy_url}/{topic}"
-
+    async def _post(self, message: Message) -> None:
+        url = f"{_NTFY_URL}/{self._channel}"
         headers = {
-            "Title": title,
-            "Priority": priority,
+            "Title": message.title,
+            "Priority": "default",
+            "Tags": ",".join(message.tags),
         }
-
-        if tags:
-            headers["Tags"] = ",".join(tags)
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=message.encode('utf-8'), headers=headers) as response:
-                self.logger.debug(f"ntfy response status: {response.status}")
-                if response.status == 200:
-                    self.logger.debug(f"Notification sent successfully to topic {topic}")
-                else:
-                    error_text = await response.text()
-                    self.logger.error(
-                        f"Failed to send notification: {response.status} - {error_text}"
-                    )
+        timeout = aiohttp.ClientTimeout(total=10)  # NTF-3
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                url, data=message.body.encode("utf-8"), headers=headers
+            ) as response:
+                if response.status != 200:
+                    self._log.error("ntfy returned HTTP %s for %s",
+                                    response.status, url)

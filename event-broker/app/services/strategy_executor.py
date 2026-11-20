@@ -1,140 +1,255 @@
-"""Strategy Executor - Main orchestrator for parallel account processing"""
+"""StrategyExecutor (parent process) (PRD §10.2).
 
-import os
+Owns the process pool, the running-strategy set, and post-run handling:
+scheduled-file changes (§10.5), run records (§12), and notifications (§11).
+"""
+
+from __future__ import annotations
+
 import asyncio
 import logging
-from datetime import datetime
-from typing import Dict, List, Optional, Any
 from concurrent.futures import ProcessPoolExecutor
-from app_config import DEFAULT_ALLOCATIONS_BASE_URL, get_config
-from .notification_service import NotificationService
+from concurrent.futures.process import BrokenProcessPool
+from multiprocessing import get_context
+from typing import Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
+
+from app_config import AppConfig
+
+from ..accounts import AccountConfig, AccountRegistry
+from ..market_clock import MarketClock
+from ..results import AccountRunResult, FailureReason, NoteOut, RunOutcome
+from ..settings import RuntimeSettings
+from .notification_service import (
+    Notifier,
+    NotificationContext,
+    NotificationKind,
+)
+from .run_records import RunRecords
+from .scheduler_service import add_account, remove_accounts
+from .trading_executor import execute_strategy_batch
+
+_ET = ZoneInfo("America/New_York")
+
 
 class StrategyExecutor:
-    """Orchestrates parallel execution of strategy trading"""
+    """EXE-1..3: the pool, the dedup set, and post-process for each result."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
-        self.config = get_config()
+    def __init__(
+        self,
+        *,
+        config: AppConfig,
+        settings: RuntimeSettings,
+        registry: AccountRegistry,
+        clock: MarketClock,
+        notifier: Notifier,
+        records: RunRecords,
+        logger: Optional[logging.Logger] = None,
+    ):
+        self.config = config
+        self.settings = settings
+        self.registry = registry
+        self.clock = clock
+        self.notifier = notifier
+        self.records = records
         self.logger = logger or logging.getLogger(__name__)
-        self.active_strategies = set()  # Simple deduplication
-        self.executor = ProcessPoolExecutor(max_workers=self.config.executor.max_workers)
-        self.notification_service = NotificationService(logger=logger)
+        self.running: set[str] = set()  # strategies currently running (dedup)
+        # EXE-1: explicit fork context (PRD R12)
+        self._pool = ProcessPoolExecutor(
+            max_workers=config.executor.max_workers, mp_context=get_context("fork")
+        )
 
-    async def execute_strategy(self, strategy_name: str, accounts: List[dict], event_data: dict):
-        """Execute strategy for all accounts in parallel subprocess"""
+    # ------------------------------------------------------------------ #
+    async def execute(
+        self,
+        strategy: str,
+        accounts: Sequence[AccountConfig],
+        mode: str,
+        source: str,
+    ) -> Optional[list[AccountRunResult]]:
+        """EXE-2. Runs a strategy batch and post-processes each result.
 
-        # Deduplication - prevent double execution
-        if strategy_name in self.active_strategies:
-            self.logger.info(f"Strategy {strategy_name} already running")
-            return {'status': 'already_running', 'strategy': strategy_name}
-
-        self.active_strategies.add(strategy_name)
-
-        try:
-            # Track execution start time
-            start_time = datetime.now()
-            self.logger.info(f"Starting strategy {strategy_name} execution for {len(accounts)} accounts")
-
-            # Execute in subprocess for complete isolation
-            from .trading_executor import execute_strategy_batch
-            result = await asyncio.get_event_loop().run_in_executor(
-                self.executor,
-                execute_strategy_batch,
-                strategy_name,
-                accounts,
-                event_data,
-                self._get_environment()
+        Returns `None` when the trigger is dropped because the strategy is
+        already running (no notification for signal/manual; scheduled callers
+        turn that into a `SKIPPED_FINAL` notification, SCH-6).
+        """
+        if strategy in self.running:
+            self.logger.warning(
+                "Dropped %s trigger for strategy %s: a run is already in progress.",
+                source, strategy,
             )
+            return None
 
-            # Log summary with account-level details
-            execution_time = (datetime.now() - start_time).total_seconds()
-            successful_accounts = [r for r in result.get('results', []) if r.get('success', False)]
-            failed_accounts = [r for r in result.get('results', []) if not r.get('success', True)]
-
-            self.logger.info(
-                f"Strategy {strategy_name} completed in {execution_time:.1f}s: "
-                f"{len(successful_accounts)}/{len(accounts)} successful"
-            )
-
-            # Log failures with account context
-            for failure in failed_accounts:
-                self.logger.error(
-                    f"Strategy {strategy_name} failed for account {failure.get('account_id')}: "
-                    f"{failure.get('error', 'Unknown error')}"
+        # EXE-3: detect a closed market in the parent before starting a worker.
+        if mode == "live" and not self.clock.is_open(self.clock.now()):
+            results = [
+                self._static_result(
+                    a, mode, source, RunOutcome.MARKET_CLOSED,
+                    error="The market was closed.",
                 )
+                for a in accounts
+            ]
+            await self._postprocess(results)
+            return results
 
-            # Send notifications for each account
-            await self._send_account_notifications(strategy_name, result)
-
-            return result
-
-        except Exception as e:
-            self.logger.error(f"Strategy {strategy_name} execution failed completely: {e}")
-            # Return structured error response
-            return {
-                'status': 'failed',
-                'strategy': strategy_name,
-                'error': str(e),
-                'accounts_affected': len(accounts),
-                'timestamp': datetime.now().isoformat()
-            }
-
+        self.running.add(strategy)
+        try:
+            results = await self._run_in_pool(strategy, accounts, mode, source)
         finally:
-            self.active_strategies.discard(strategy_name)
+            # EXE-2 step 3: release the mark before any post-processing.
+            self.running.discard(strategy)
 
-    def _get_environment(self) -> Dict[str, str]:
-        """Get environment variables for subprocess"""
-        env_vars = {
-            'TRADING_MODE': os.getenv('TRADING_MODE', 'paper'),
-            'IB_HOST': os.getenv('IB_HOST', 'ibkr-gateway'),
-            'ALLOCATIONS_BASE_URL': os.getenv('ALLOCATIONS_BASE_URL', DEFAULT_ALLOCATIONS_BASE_URL),
-            'ALLOCATIONS_API_KEY': os.getenv('ALLOCATIONS_API_KEY', ''),
-            'LOG_LEVEL': os.getenv('LOG_LEVEL', 'INFO'),
-            'USER_NOTIFICATIONS_ENABLED': os.getenv('USER_NOTIFICATIONS_ENABLED', 'false'),
-            'USER_NOTIFICATIONS_CHANNEL': os.getenv('USER_NOTIFICATIONS_CHANNEL', '')
-        }
+        await self._postprocess(results)
+        return results
 
-        # Only include IB_PORT if explicitly set (allow automatic port detection otherwise)
-        ib_port = os.getenv('IB_PORT')
-        if ib_port:
-            env_vars['IB_PORT'] = ib_port
-
-        return env_vars
-
-    async def _send_account_notifications(self, strategy_name: str, result: dict):
-        """Send ntfy notifications for each account result"""
-
-        timestamp = result.get('timestamp', datetime.now().isoformat())
-        operation = result.get('event', 'unknown')
-
-        for account_result in result.get('results', []):
-            account_id = account_result.get('account_id')
-            success = account_result.get('success', False)
-            error = account_result.get('error')
-            details = account_result.get('details')
-
-            await self.notification_service.send_account_notification(
-                account_id=account_id,
-                strategy_name=strategy_name,
-                operation=operation,
-                timestamp=timestamp,
-                success=success,
-                error=error,
-                details=details
-            )
-
-            # Send warnings if present
-            if details and details.get('warnings'):
-                await self.notification_service.send_warnings(
-                    account_id=account_id,
-                    strategy_name=strategy_name,
-                    operation=operation,
-                    warnings=details.get('warnings')
-                )
-
-    def cleanup(self):
-        """Cleanup resources"""
+    async def _run_in_pool(
+        self, strategy: str, accounts: Sequence[AccountConfig], mode: str, source: str
+    ) -> list[AccountRunResult]:
+        the_pool = self._pool
         try:
-            self.executor.shutdown(wait=True, cancel_futures=True)
-            self.logger.info("Strategy executor cleaned up")
-        except Exception as e:
-            self.logger.error(f"Error during cleanup: {e}")
+            raw = await asyncio.get_running_loop().run_in_executor(
+                the_pool, execute_strategy_batch, strategy, list(accounts), mode, source,
+                self.config, self.settings,
+            )
+        except BrokenProcessPool:
+            self.logger.error("broker worker pool broke for strategy %s", strategy)
+            if self._pool is the_pool:  # EXE-2 step 4: replace the broken pool
+                self.logger.warning("replacing broken process pool")
+                self._pool = ProcessPoolExecutor(
+                    max_workers=self.config.executor.max_workers,
+                    mp_context=get_context("fork"),
+                )
+            return [
+                self._static_result(
+                    a, mode, source, RunOutcome.FAILED,
+                    reason=FailureReason.WORKER_CRASHED,
+                    error="The worker process stopped unexpectedly. "
+                    "Orders may have been placed; check the account.",
+                )
+                for a in accounts
+            ]
+        except Exception as exc:  # pickling error, etc. (EXE-2 step 4)
+            self.logger.error("failed to run strategy %s: %s", strategy, exc)
+            return [
+                self._static_result(
+                    a, mode, source, RunOutcome.FAILED,
+                    reason=FailureReason.INTERNAL_ERROR,
+                    error=f"Internal error: {type(exc).__name__}: {exc}"[:300],
+                )
+                for a in accounts
+            ]
+        try:
+            return [AccountRunResult(**d) for d in raw]
+        except Exception as exc:  # worker returned malformed data
+            self.logger.error("malformed worker results for %s: %s", strategy, exc)
+            return [
+                self._static_result(
+                    a, mode, source, RunOutcome.FAILED,
+                    reason=FailureReason.INTERNAL_ERROR,
+                    error=f"Internal error: {type(exc).__name__}: {exc}"[:300],
+                )
+                for a in accounts
+            ]
+
+    # ------------------------------------------------------------------ #
+    async def _postprocess(self, results: Sequence[AccountRunResult]) -> None:
+        """EXE-2 step 5: each post-processing step is independently guarded."""
+        for result in results:
+            kind, action = self._decision(result)
+            try:
+                self.records.append(result.record)
+            except Exception as exc:  # noqa: BLE001 - one failure stops nothing
+                self.logger.error("run-record write failed for %s: %s", result.run_id, exc)
+            try:
+                self._apply(action, result)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("schedule update failed for %s: %s", result.account_id, exc)
+            try:
+                await self._send(result, kind)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("notification failed for %s: %s", result.account_id, exc)
+
+    def _decision(self, result: AccountRunResult) -> Tuple[NotificationKind, Optional[str]]:
+        """PRD §10.5: map a result to (notification kind, schedule action)."""
+        if result.mode == "preview":
+            kind = (NotificationKind.PREVIEW if result.outcome == RunOutcome.PREVIEWED
+                    else NotificationKind.PREVIEW_FAILED)
+            return kind, None
+
+        if result.source == "scheduled":
+            kind = (NotificationKind.SUCCESS if result.outcome == RunOutcome.SUCCEEDED
+                    else NotificationKind.FAILED_FINAL)
+            return kind, None
+
+        # signal / manual, live
+        if result.outcome == RunOutcome.SUCCEEDED:
+            return NotificationKind.SUCCESS, "remove"
+
+        if not self.config.scheduler.enabled:  # RTY-1
+            result.notes.append(NoteOut(
+                level="warning",
+                text="Automatic retry is disabled (scheduler.enabled: false).",
+            ))
+            return NotificationKind.FAILED_FINAL, None
+
+        if result.outcome == RunOutcome.MARKET_CLOSED:
+            return NotificationKind.QUEUED_MARKET_CLOSED, "add"
+        return NotificationKind.FAILED_WILL_RETRY, "add"
+
+    def _apply(self, action: Optional[str], result: AccountRunResult) -> None:
+        """RTY-2: add/remove the account from the scheduled file (parent only)."""
+        if action is None:
+            return
+        path = self.config.scheduler.scheduled_file_path
+        if action == "add":
+            add_account(path, result.account_id, self.logger)
+        else:
+            remove_accounts(path, [result.account_id], self.logger)
+
+    async def _send(self, result: AccountRunResult, kind: NotificationKind) -> None:
+        next_run = None
+        if kind in (NotificationKind.QUEUED_MARKET_CLOSED, NotificationKind.FAILED_WILL_RETRY):
+            next_run = self.clock.next_scheduled_run(self.clock.now())
+        await self.notifier.send(result, NotificationContext(kind=kind, next_run=next_run))
+
+    def _static_result(
+        self,
+        account: AccountConfig,
+        mode: str,
+        source: str,
+        outcome: RunOutcome,
+        *,
+        reason: Optional[FailureReason] = None,
+        error: Optional[str] = None,
+    ) -> AccountRunResult:
+        """Build a minimal parent-side result (market-closed, worker-crash, internal)."""
+        now = self.clock.now().astimezone(_ET)
+        run_id = f"{now:%Y%m%d-%H%M%S}-{account.account_id}"
+        record = {
+            "run_id": run_id,
+            "account_id": account.account_id,
+            "strategy_name": account.strategy_name,
+            "mode": mode, "source": source,
+            "started_at": now.isoformat(), "finished_at": now.isoformat(),
+            "outcome": outcome.value,
+            "failure_reason": reason.value if reason else None,
+            "error_message": error,
+            "notes": [],
+        }
+        return AccountRunResult(
+            run_id=run_id,
+            account_id=account.account_id,
+            strategy_name=account.strategy_name,
+            mode=mode, source=source,
+            outcome=outcome,
+            failure_reason=reason,
+            error_message=error,
+            record=record,
+        )
+
+    def cleanup(self) -> None:
+        """BOOT-5: shut the pool down with wait + cancel_futures."""
+        try:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("error during pool cleanup: %s", exc)
