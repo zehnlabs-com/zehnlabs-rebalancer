@@ -1,0 +1,5 @@
+# Development-only dependencies (NOT installed in the Docker image)
+# Runtime deps live in requirements.txt. Install test tooling with:
+#   uv pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8,<9
+httpx
