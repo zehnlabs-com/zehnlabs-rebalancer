@@ -244,6 +244,17 @@ async def rebalance_account(
             "notes": [n.model_dump() for n in notes],
         })
         result.record = record
+        # LOG-1: one outcome line for every run (success, preview, failure, closed).
+        parts = [f"outcome: {outcome.value}"]
+        if reason is not None:
+            parts.append(f"reason={reason.value}")
+        if value_end is not None:
+            parts.append(f"value_end={value_end:,.2f}")
+        if cash_end is not None:
+            parts.append(f"cash_end={cash_end:,.2f}")
+        if error_message:
+            parts.append(f"error={error_message}")
+        adapter.info(" ".join(parts))
         return result
 
     async def fail(reason: FailureReason, message: str) -> AccountRunResult:
@@ -581,8 +592,6 @@ async def rebalance_account(
                         order.side, order.symbol, order.quantity,
                         order.filled_quantity, order.average_fill_price, order.status,
                     )
-                adapter.info("outcome: SUCCEEDED cash_end=%s value_end=%s",
-                             f"{cash_end:,.2f}", f"{buy_plan.total_value:,.2f}")
                 return finish(RunOutcome.SUCCEEDED,
                               value_end=buy_plan.total_value, cash_end=cash_end)
     except ConnectionFailedError as exc:

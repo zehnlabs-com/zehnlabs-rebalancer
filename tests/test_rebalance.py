@@ -104,7 +104,7 @@ class HappyPathTests(unittest.IsolatedAsyncioTestCase):
 class WorkerLoggingTests(unittest.IsolatedAsyncioTestCase):
     """LOG-1 / WRK-2: run lines reach the worker handler with all three fields."""
 
-    async def test_run_lines_carry_strategy_account_and_run_id(self):
+    async def _run_captured(self, conn, mode):
         import io
         from app.services import trading_executor as te
 
@@ -120,18 +120,34 @@ class WorkerLoggingTests(unittest.IsolatedAsyncioTestCase):
                 te._worker_logger,
                 {"strategy": "strategy-one", "account_id": ACCOUNT.account_id},
             )
-            conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
             deps = make_deps(conn, open_clock())
             deps.logger = adapter  # exactly how trading_executor wires it
-            result = await rebalance_account(ACCOUNT, "live", "signal", deps)
+            result = await rebalance_account(ACCOUNT, mode, "signal", deps)
         finally:
             handler.setStream(old_stream)
             te._worker_logger.setLevel(old_level)
         out = buf.getvalue()
-        tag = f"[strategy-one {ACCOUNT.account_id} {result.run_id}]"
+        self.assertNotIn(" -] ", out)  # no line fell back to a missing run_id
+        return result, out, f"[strategy-one {ACCOUNT.account_id} {result.run_id}]"
+
+    async def test_run_lines_carry_strategy_account_and_run_id(self):
+        conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
+        result, out, tag = await self._run_captured(conn, "live")
         self.assertIn(f"{tag} PLAN sells: XLE -100", out)
         self.assertIn(f"{tag} PLAN buys: GLD +22", out)
-        self.assertNotIn(" -] ", out)  # no line fell back to a missing run_id
+        self.assertIn(f"{tag} outcome: SUCCEEDED value_end=104,026.45 cash_end=335.00", out)
+        self.assertEqual(out.count("outcome:"), 1)
+
+    async def test_preview_and_failure_log_their_outcome(self):
+        conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
+        result, out, tag = await self._run_captured(conn, "preview")
+        self.assertEqual(result.outcome, RunOutcome.PREVIEWED)
+        self.assertIn(f"{tag} outcome: PREVIEWED value_end=104,031.45", out)
+
+        foreign = [WorkingOrder("QQQ", Side.BUY, 50, own=False)]
+        conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS, working=foreign)
+        result, out, tag = await self._run_captured(conn, "live")
+        self.assertIn(f"{tag} outcome: FAILED reason=FOREIGN_ORDERS error=BUY 50 QQQ", out)
 
     def test_worker_logger_does_not_propagate_to_root(self):
         from app.services import trading_executor as te
