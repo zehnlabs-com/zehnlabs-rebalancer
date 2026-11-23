@@ -125,10 +125,15 @@ class IBKRConnection(BrokerConnection):
                 fetchFields=(
                     StartupFetch.POSITIONS
                     | StartupFetch.ORDERS_OPEN
-                    | StartupFetch.ACCOUNT_UPDATES
                 ),
             )
+            await self._bounded(
+                ib.reqAccountUpdatesMultiAsync(self.account_id),
+                ConnectionFailedError,
+                "Account updates request",
+            )
         except Exception as exc:  # noqa: BLE001 - wrap any connect failure
+            ib.disconnect()
             raise ConnectionFailedError(
                 f"Could not connect to IB Gateway at {host}:{port}."
             ) from exc

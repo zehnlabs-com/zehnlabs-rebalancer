@@ -60,6 +60,7 @@ class FakeIB:
         self.open_order_trades = []       # for reqAllOpenOrdersAsync
         self.cancelled = set()
         self.connected_kwargs = None
+        self.account_update_multi_calls = []
 
     def isConnected(self):
         return self.connected
@@ -67,6 +68,10 @@ class FakeIB:
     async def connectAsync(self, **kwargs):
         self.connected_kwargs = kwargs
         self.connected = True
+        return None
+
+    async def reqAccountUpdatesMultiAsync(self, account):
+        self.account_update_multi_calls.append(account)
         return None
 
     def disconnect(self):
@@ -160,21 +165,89 @@ class ConnectTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kw["account"], "U123456")
         self.assertIs(kw["raiseSyncErrors"], True)
         self.assertEqual(kw["clientId"], 42)
-        # POSITIONS | ORDERS_OPEN | ACCOUNT_UPDATES; asserts ORDERS_OPEN is present
-        # and that EXECUTIONS / ORDERS_COMPLETE / SUB_ACCOUNT_UPDATES are absent.
+        # Load positions and working orders during startup, then subscribe to this
+        # account through the concurrent-safe multi-account request.
         from ib_async import StartupFetch
         combo = kw["fetchFields"]
-        self.assertEqual(combo,
-                         StartupFetch.POSITIONS | StartupFetch.ORDERS_OPEN
-                         | StartupFetch.ACCOUNT_UPDATES)
+        self.assertEqual(combo, StartupFetch.POSITIONS | StartupFetch.ORDERS_OPEN)
         for excluded in (StartupFetch.EXECUTIONS, StartupFetch.ORDERS_COMPLETE,
+                         StartupFetch.ACCOUNT_UPDATES,
                          StartupFetch.SUB_ACCOUNT_UPDATES):
             self.assertEqual(combo.value & excluded.value, 0)
+        self.assertEqual(fake.account_update_multi_calls, ["U123456"])
         self.assertEqual(fake.market_data_type, 1)
+
+    async def test_two_accounts_can_connect_concurrently(self):
+        """IBKR rejects concurrent legacy account subscriptions with warning 2101."""
+
+        class GatewayFake(FakeIB):
+            legacy_account = None
+            snapshots = {
+                "U111111": [av("CashBalance", 1000), av("NetLiquidation", 11000)],
+                "U222222": [av("CashBalance", 2000), av("NetLiquidation", 22000)],
+            }
+
+            async def connectAsync(self, **kwargs):
+                await asyncio.sleep(0)
+                await super().connectAsync(**kwargs)
+                if kwargs["fetchFields"] & module.StartupFetch.ACCOUNT_UPDATES:
+                    account = kwargs["account"]
+                    if self.__class__.legacy_account not in (None, account):
+                        self.connected = False
+                        raise ConnectionError("IBKR warning 2101")
+                    self.__class__.legacy_account = account
+                    self.account_values[account] = self.snapshots[account]
+
+            async def reqAccountUpdatesMultiAsync(self, account):
+                await super().reqAccountUpdatesMultiAsync(account)
+                self.account_values[account] = self.snapshots[account]
+
+        accounts = (("U111111", 111111), ("U222222", 222222))
+        fakes = [GatewayFake(), GatewayFake()]
+        for fake in fakes:
+            fake.managed = [account_id for account_id, _ in accounts]
+        connections = [
+            IBKRConnection(account_id, client_id, TEST_CFG, SETTINGS)
+            for account_id, client_id in accounts
+        ]
+
+        try:
+            with patch.object(module, "IB", side_effect=fakes):
+                results = await asyncio.gather(
+                    *(conn.connect() for conn in connections),
+                    return_exceptions=True,
+                )
+
+            self.assertEqual(results, [None, None])
+            states = await asyncio.gather(
+                *(conn.account_state() for conn in connections)
+            )
+            self.assertEqual(
+                [(state.cash, state.net_liquidation) for state in states],
+                [(1000.0, 11000.0), (2000.0, 22000.0)],
+            )
+            self.assertEqual(
+                [fake.account_update_multi_calls for fake in fakes],
+                [["U111111"], ["U222222"]],
+            )
+        finally:
+            await asyncio.gather(*(conn.close() for conn in connections))
 
     async def test_unmanaged_account_fails(self):
         fake = FakeIB()
         fake.managed = ["UOTHER"]
+        with patch.object(module, "IB", return_value=fake):
+            conn = make_conn(fake)
+            with self.assertRaises(ConnectionFailedError):
+                await conn.connect()
+        self.assertFalse(fake.connected)
+
+    async def test_account_update_timeout_disconnects(self):
+        class TimeoutFake(FakeIB):
+            async def reqAccountUpdatesMultiAsync(self, account):
+                raise asyncio.TimeoutError
+
+        fake = TimeoutFake()
         with patch.object(module, "IB", return_value=fake):
             conn = make_conn(fake)
             with self.assertRaises(ConnectionFailedError):

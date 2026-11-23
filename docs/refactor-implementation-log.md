@@ -410,3 +410,15 @@ untracked `CLAUDE.md` / `working-docs/` planning scratch (both out of the git re
   untracked, so they are not part of any commit; left untouched).
 - Re-confirm the §16.4 old-config boot check is acceptable at unit-test level given PRD §0.4 forbids a real
   Gateway connection; a `docker compose run` boot test (no broker) could be added by Faisal if wanted.
+
+## Production correction — concurrent IBKR account updates (2026-11-23)
+
+Production proved WP4's exact account-update startup flags were wrong for concurrent accounts.
+`StartupFetch.ACCOUNT_UPDATES` uses legacy `reqAccountUpdates`, for which IB Gateway accepts only one
+account across clients; ten of eleven concurrent live runs received warning 2101 and timed out.
+
+The connector now starts with `POSITIONS | ORDERS_OPEN`, then awaits targeted
+`reqAccountUpdatesMultiAsync(account_id)` under `request_timeout_seconds`. The subscription remains
+open until disconnect so post-sell cash changes continue to update. Tests cover two different
+accounts connected concurrently with valid cash/NLV snapshots and cleanup on account-update timeout.
+PRD IB-1/IB-15 and ADR 0007 were corrected to match.

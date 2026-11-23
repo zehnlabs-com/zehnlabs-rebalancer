@@ -733,13 +733,16 @@ Port: `settings.ib_port` if set, otherwise `live_internal` / `paper_internal` by
 ```python
 await ib.connectAsync(host, port, clientId=client_id, timeout=connection_timeout_seconds,
                       account=account_id, raiseSyncErrors=True,
-                      fetchFields=StartupFetch.POSITIONS | StartupFetch.ORDERS_OPEN
-                                  | StartupFetch.ACCOUNT_UPDATES)
+                      fetchFields=StartupFetch.POSITIONS | StartupFetch.ORDERS_OPEN)
+await bounded(ib.reqAccountUpdatesMultiAsync(account_id), request_timeout_seconds)
 ```
 
 `ORDERS_OPEN` is **required**. Without it the own-order cancel step sees nothing and lets a
 duplicate order through. A unit test asserts these exact flags. Completed orders, executions and
-sub-account updates must **not** be fetched.
+startup account updates must **not** be fetched. Request only this account through
+`reqAccountUpdatesMultiAsync`; the legacy `reqAccountUpdates` call permits only one account across
+Gateway clients and makes concurrent account runs fail with warning 2101. Keep the multi-account
+subscription open for the connection lifetime so post-sell cash updates continue to arrive.
 After connecting: sleep `connection_stabilization_delay_seconds`; fail if disconnected; fail if
 `account_id` is not in `ib.managedAccounts()` (message:
 `Account <id> is not available on this IB Gateway login.`); call
@@ -798,8 +801,8 @@ Note for Faisal's paper check (§16.5): it must be confirmed that manual TWS/mob
 
 **IB-14. Close.** `ib.disconnect()` if connected; swallow and log errors.
 
-**IB-15.** Never call `reqGlobalCancel`, `reqAccountUpdatesMulti`, `reqCompletedOrders`, or
-`reqExecutions`.
+**IB-15.** Never call `reqGlobalCancel`, legacy `reqAccountUpdates`, `reqCompletedOrders`, or
+`reqExecutions`. Use targeted `reqAccountUpdatesMultiAsync(account_id)` only as specified by IB-1.
 
 ---
 
@@ -1090,7 +1093,8 @@ unknown nested key; the shipped `config.yaml` loads; `accounts.yaml.example` loa
 message; a disabled account with a removed key still fails; registry filtering.
 
 **IBKR connection (`tests/test_ibkr_connection.py`)**, using a mocked `ib_async.IB`: connect
-arguments (exact `fetchFields`, `account`, `raiseSyncErrors=True`); unmanaged account fails; cash
+arguments (exact `fetchFields`, `account`, `raiseSyncErrors=True`); targeted multi-account update;
+two different accounts connect concurrently and retain valid cash/NLV snapshots; unmanaged account fails; cash
 from `$LEDGER-CashBalance`, from `CashBalance`, prefixed one preferred when both are present,
 neither → error; NLV missing → error; non-STK or negative position → error; status mapping
 including empty → WORKING; own vs foreign classification; fractional quantity refused by `place`;

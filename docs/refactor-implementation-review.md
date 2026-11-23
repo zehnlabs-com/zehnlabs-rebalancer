@@ -10,6 +10,20 @@ No code was changed. No real Gateway was contacted; no real ntfy message was sen
 
 ---
 
+## Production correction, 2026-11-23
+
+The review missed a production-blocking IBKR constraint. V3's
+`StartupFetch.ACCOUNT_UPDATES` made every per-account connection use legacy
+`reqAccountUpdates`; IB Gateway permits only one such account subscription across clients. A burst
+of eleven live runs produced warning 2101 for ten accounts, followed by connection timeouts. The
+connector now starts positions and open orders normally, then subscribes only its account through
+`reqAccountUpdatesMultiAsync`. A two-account concurrency regression test models warning 2101 and
+requires both connections to retain valid cash and NetLiquidation snapshots. Historical claims
+below that the old exact flags were correct describe what this review checked at the time; they are
+superseded by this correction and current PRD IB-1/IB-15.
+
+---
+
 ## Follow-up fixes (Faisal-approved), 2026-11-20
 
 | Item | Commit | Result |

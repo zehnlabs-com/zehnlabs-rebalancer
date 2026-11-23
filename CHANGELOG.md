@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fixed concurrent IBKR account runs failing with warning 2101 by replacing the legacy
+  single-account update subscription with one targeted multi-account subscription per connection.
+
 ## 3.0.0 — Rebalancer refactor
 
 Breaking configuration changes; see §3.1 of `docs/refactor-prd.md` for the
