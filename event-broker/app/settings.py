@@ -19,12 +19,12 @@ class RuntimeSettings(BaseModel):
     ib_host: str = "ibkr-gateway"
     ib_port: Optional[int] = None
     allocations_base_url: str = DEFAULT_ALLOCATIONS_BASE_URL
-    allocations_api_key: str
+    zehnlabs_api_key: str
     user_notifications_enabled: bool = False
     user_notifications_channel: str = ""
 
     def __repr__(self) -> str:
-        masked = self.allocations_api_key[:3] + "..." if self.allocations_api_key else ""
+        masked = self.zehnlabs_api_key[:3] + "..." if self.zehnlabs_api_key else ""
         fields = self.allocations_base_url, masked, self.trading_mode
         return f"RuntimeSettings(base_url={fields[0]!r}, api_key={fields[1]!r}, mode={fields[2]!r})"
 
@@ -38,9 +38,9 @@ def _env_bool(value: Optional[str], default: bool) -> bool:
 def build_settings() -> RuntimeSettings:
     """Build RuntimeSettings from the environment (ENV-1).
 
-    Fails if ALLOCATIONS_API_KEY is missing or blank.
+    Fails if ZEHNLABS_API_KEY is missing or blank.
     """
-    api_key = os.environ.get("ALLOCATIONS_API_KEY", "")
+    api_key = os.environ.get("ZEHNLABS_API_KEY", "")
     trading_mode = os.environ.get("TRADING_MODE", "paper").strip().lower()
     if trading_mode not in ("paper", "live"):
         trading_mode = "paper"
@@ -54,12 +54,12 @@ def build_settings() -> RuntimeSettings:
         ib_host=os.environ.get("IB_HOST", "ibkr-gateway"),
         ib_port=ib_port,
         allocations_base_url=os.environ.get("ALLOCATIONS_BASE_URL", DEFAULT_ALLOCATIONS_BASE_URL),
-        allocations_api_key=api_key,
+        zehnlabs_api_key=api_key,
         user_notifications_enabled=_env_bool(os.environ.get("USER_NOTIFICATIONS_ENABLED"), False),
         user_notifications_channel=os.environ.get("USER_NOTIFICATIONS_CHANNEL", ""),
     )
-    if not settings.allocations_api_key or not settings.allocations_api_key.strip():
+    if not settings.zehnlabs_api_key or not settings.zehnlabs_api_key.strip():
         raise ValueError(
-            "ALLOCATIONS_API_KEY is required (get it from /api); set it in the environment."
+            "ZEHNLABS_API_KEY is required (get it from /api); set it in the environment."
         )
     return settings

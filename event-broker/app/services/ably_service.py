@@ -33,7 +33,7 @@ class AblyEventSubscriber:
         self.strategies: Dict[str, List[AccountConfig]] = strategies or {}
         self.ably: Optional[AblyRealtime] = None
         self.config = get_config()
-        self.zehnlabs_api_key = os.getenv("ALLOCATIONS_API_KEY")
+        self.zehnlabs_api_key = os.getenv("ZEHNLABS_API_KEY")
         self.allocations_base_url = os.getenv("ALLOCATIONS_BASE_URL", DEFAULT_ALLOCATIONS_BASE_URL)
         self.api_key: Optional[str] = None
         self._tasks: set[asyncio.Task] = set()  # SIG-1: keep a ref to every message task
@@ -72,7 +72,7 @@ class AblyEventSubscriber:
     async def _fetch_ably_key(self) -> str:
         """Fetch once per process startup; SDK reconnects retain the returned app key."""
         if not self.zehnlabs_api_key or not self.zehnlabs_api_key.strip():
-            raise ValueError("ALLOCATIONS_API_KEY is required. Obtain your Zehnlabs key with /api in Telegram.")
+            raise ValueError("ZEHNLABS_API_KEY is required. Obtain your Zehnlabs key with /api in Telegram.")
 
         url = self._rebalance_auth_url()
         timeout = aiohttp.ClientTimeout(total=self.config.api.rebalance_auth_timeout_seconds)
@@ -85,7 +85,7 @@ class AblyEventSubscriber:
                     allow_redirects=False,
                 ) as response:
                     if response.status == 401:
-                        raise RuntimeError("Zehnlabs API key rejected. Check ALLOCATIONS_API_KEY; use /api regen if lost.")
+                        raise RuntimeError("Zehnlabs API key rejected. Check ZEHNLABS_API_KEY; use /api regen if lost.")
                     if response.status == 403:
                         raise RuntimeError("Zehnlabs API access is not eligible. Check your subscription with /me in Telegram.")
                     if response.status != 200:

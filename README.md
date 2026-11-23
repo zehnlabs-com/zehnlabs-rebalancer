@@ -98,7 +98,7 @@ Now, edit the `.env` file with your specific details:
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `IB_USERNAME`                        | Your Interactive Brokers username.                                                                                                     |
 | `IB_PASSWORD`                        | Your Interactive Brokers password.                                                                                                     |
-| `ALLOCATIONS_API_KEY`                | Your Zehnlabs API key. Send `/api` to `FintechZL_bot` in Telegram.                 |
+| `ZEHNLABS_API_KEY`                   | Your Zehnlabs API key. Send `/api` to `FintechZL_bot` in Telegram.                                                         |
 | `ALLOCATIONS_BASE_URL`               | Allocation API base, including `/strategies`. Default: `https://workers.fintech.zehnlabs.com/api/v1/strategies`.                            |
 | `TRADING_MODE`                       | Set to `live` for real money trading or `paper` for paper trading.                                                                       |
 | `AUTO_RESTART_TIME`                  | The time (in `America/New_York` timezone) when the IBKR Gateway will automatically restart. Defaults to `10:00 PM`. E.g., `02:00 PM`.      |
@@ -305,7 +305,7 @@ The system uses a Docker container for the IBKR Gateway, which requires your log
 You can receive real-time notifications about rebalancing activities on your phone or desktop using [ntfy.sh](https://ntfy.sh/).
 
 -   **Channel Security:** ntfy.sh channels are public. **Choose a long, random, and hard-to-guess channel name** for `USER_NOTIFICATIONS_CHANNEL` to keep your notifications as private as possible.
--   **Sensitive Information:** Notifications include your account numbers but **do not contain any sensitive data**.
+-   **Sensitive Information:** Account IDs are redacted and run IDs are omitted. Notifications still include the strategy, balances, and trade details needed to understand a run.
 -   **Disabling:** You can disable notifications by setting `USER_NOTIFICATIONS_ENABLED=false` in the `.env` file.
 
 ### VNC Access

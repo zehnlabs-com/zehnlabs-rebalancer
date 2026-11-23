@@ -108,7 +108,7 @@ async def _run_batch(
     clock = MarketClock(config.scheduler.market_open_time)
     async with AllocationsClient(
         settings.allocations_base_url,
-        settings.allocations_api_key,
+        settings.zehnlabs_api_key,
         config.api.allocation_timeout_seconds,
     ) as allocations:
         tasks = []

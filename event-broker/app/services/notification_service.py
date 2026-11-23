@@ -49,13 +49,15 @@ class Message:
 
 
 def _mask_account_id(account_id: str) -> str:
-    """Mask the first three digits of an account ID (e.g., U123456 -> U***456)."""
-    import re
-    match = re.search(r"\d{3}", account_id)
-    if not match:
-        return account_id
-    start, end = match.span()
-    return account_id[:start] + "***" + account_id[end:]
+    """Mask account digits, retaining only the final three when available."""
+    digit_indexes = [index for index, char in enumerate(account_id) if char.isdigit()]
+    if not digit_indexes:
+        return "***"
+    visible = set(digit_indexes[-3:]) if len(digit_indexes) > 3 else set()
+    return "".join(
+        char if not char.isdigit() or index in visible else "*"
+        for index, char in enumerate(account_id)
+    )
 
 
 def _format_strategy_name(strategy_slug: str) -> str:
@@ -96,7 +98,6 @@ def _header(result: AccountRunResult) -> list[str]:
         f"Account: {_mask_account_id(result.account_id)}",
         f"Strategy: {_format_strategy_name(result.strategy_name)}",
         f"Time: {_time_str(result)}",
-        f"Run: {result.run_id}",
         "",
     ]
 
@@ -173,7 +174,7 @@ def _content(result: AccountRunResult, context: NotificationContext) -> list[str
             f"Error: {result.error_message or 'unknown error'}",
             _what_happened(result),
             "This account will not be retried automatically. Fix the issue, then run: "
-            f"./tools/rebalance.sh -account {result.account_id} -exec rebalance",
+            "./tools/rebalance.sh -account <account-id> -exec rebalance",
         ] + _note_lines(result)
 
     if kind == NotificationKind.SKIPPED_FINAL:
@@ -204,7 +205,7 @@ def _content(result: AccountRunResult, context: NotificationContext) -> list[str
     return []
 
 
-def _cap_body(lines: list[str], run_id: str) -> str:
+def _cap_body(lines: list[str]) -> str:
     """NTF-4: the body is at most 3,500 UTF-8 bytes."""
     body = "\n".join(lines)
     if len(body.encode("utf-8")) <= _MAX_BODY_BYTES:
@@ -218,7 +219,7 @@ def _cap_body(lines: list[str], run_id: str) -> str:
         size += add
         kept.append(line)
     dropped = len(lines) - len(kept)
-    ending = f"…and {dropped} more notes (see logs, run {run_id})"
+    ending = f"…and {dropped} more notes (see logs)"
     while kept and len(("\n".join(kept) + "\n" + ending).encode("utf-8")) > _MAX_BODY_BYTES:
         kept.pop()
         dropped += 1
@@ -240,7 +241,15 @@ def render(result: AccountRunResult, context: NotificationContext) -> Message:
     """Pure rendering (NTF-1)."""
     title, tags = _TITLE_TAGS.get(context.kind, ("Rebalance notification", []))
     body_lines = _header(result) + _content(result, context)
-    return Message(title=title, body=_cap_body(body_lines, result.run_id), tags=tags)
+    masked_account = _mask_account_id(result.account_id)
+    safe_lines = []
+    for line in body_lines:
+        if result.run_id:
+            line = line.replace(result.run_id, "[redacted]")
+        if result.account_id:
+            line = line.replace(result.account_id, masked_account)
+        safe_lines.append(line)
+    return Message(title=title, body=_cap_body(safe_lines), tags=tags)
 
 
 class Notifier(ABC):

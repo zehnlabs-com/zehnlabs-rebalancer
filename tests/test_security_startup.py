@@ -83,7 +83,7 @@ class Session:
 
 
 def subscriber(strategies=None):
-    with patch.dict(os.environ, {"ALLOCATIONS_API_KEY": ZEHNLABS_KEY}, clear=True), \
+    with patch.dict(os.environ, {"ZEHNLABS_API_KEY": ZEHNLABS_KEY}, clear=True), \
          patch.object(ably_service, "get_config", return_value=AppConfig()):
         return AblyEventSubscriber(
             strategy_executor=executor_stub(),
@@ -115,7 +115,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         sub = subscriber()
         sub.zehnlabs_api_key = None
         with patch.object(ably_service, "AblyRealtime") as sdk:
-            with self.assertRaisesRegex(ValueError, "ALLOCATIONS_API_KEY.* /api"):
+            with self.assertRaisesRegex(ValueError, "ZEHNLABS_API_KEY.* /api"):
                 await sub.start()
         sdk.assert_not_called()
         self.assertIsNone(sub.ably)
@@ -124,7 +124,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"REALTIME_API_KEY": ABLY_KEY}, clear=True), \
              patch.object(ably_service, "get_config", return_value=AppConfig()):
             sub = AblyEventSubscriber(strategy_executor=executor_stub())
-        with self.assertRaisesRegex(ValueError, "ALLOCATIONS_API_KEY"):
+        with self.assertRaisesRegex(ValueError, "ZEHNLABS_API_KEY"):
             await sub.start()
 
     async def test_http_failures_stop_startup_and_exclude_response_body(self):
@@ -247,18 +247,18 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 class BuildSettingsTests(unittest.TestCase):
     def test_runtime_settings_masks_api_key_and_ignores_realtime_key(self):
         with patch.dict(os.environ, {
-            "ALLOCATIONS_API_KEY": ZEHNLABS_KEY,
+            "ZEHNLABS_API_KEY": ZEHNLABS_KEY,
             "REALTIME_API_KEY": ABLY_KEY,
             "TRADING_MODE": "paper",
         }, clear=True):
             settings = build_settings()
-        self.assertEqual(settings.allocations_api_key, ZEHNLABS_KEY)
+        self.assertEqual(settings.zehnlabs_api_key, ZEHNLABS_KEY)
         self.assertNotIn(ZEHNLABS_KEY, repr(settings))
         self.assertNotIn(ABLY_KEY, repr(settings))
 
     def test_missing_api_key_fails(self):
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, "ALLOCATIONS_API_KEY"):
+            with self.assertRaisesRegex(ValueError, "ZEHNLABS_API_KEY"):
                 build_settings()
 
 
@@ -280,7 +280,7 @@ class ExecutionPreservationTests(unittest.IsolatedAsyncioTestCase):
         app.settings = SimpleNamespace(
             trading_mode="paper", ib_port=None,
             allocations_base_url=DEFAULT_ALLOCATIONS_BASE_URL,
-            allocations_api_key=ZEHNLABS_KEY,
+            zehnlabs_api_key=ZEHNLABS_KEY,
             user_notifications_enabled=False, user_notifications_channel="",
         )
         app.registry = SimpleNamespace(
@@ -405,7 +405,8 @@ class ExecutionPreservationTests(unittest.IsolatedAsyncioTestCase):
     def test_compose_and_examples_configure_one_key(self):
         compose = (REPO / "docker-compose.yaml").read_text(encoding="utf-8")
         example = (REPO / ".env.example").read_text(encoding="utf-8")
-        self.assertIn("ALLOCATIONS_API_KEY: ${ALLOCATIONS_API_KEY}", compose)
+        self.assertIn("ZEHNLABS_API_KEY: ${ZEHNLABS_API_KEY}", compose)
+        self.assertIn("ZEHNLABS_API_KEY=", example)
         self.assertNotIn("REALTIME_API_KEY:", compose)
         self.assertNotIn("REBALANCE_EVENT_SUBSCRIPTION_API_KEY=", example)
         self.assertIn("ALLOCATIONS_BASE_URL=" + DEFAULT_ALLOCATIONS_BASE_URL, example)

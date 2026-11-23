@@ -295,13 +295,13 @@ problems and fails once, listing them all. Message formats:
 
 **ENV-1.** `RuntimeSettings` (pydantic, frozen) is built once in the parent from: `TRADING_MODE`
 (`paper`|`live`, default `paper`), `IB_HOST` (default `ibkr-gateway`), `IB_PORT` (optional int),
-`ALLOCATIONS_BASE_URL` (default `DEFAULT_ALLOCATIONS_BASE_URL`), `ALLOCATIONS_API_KEY` (required,
+`ALLOCATIONS_BASE_URL` (default `DEFAULT_ALLOCATIONS_BASE_URL`), `ZEHNLABS_API_KEY` (required,
 non-blank), `USER_NOTIFICATIONS_ENABLED` (`true`/`false`, default `false`, case-insensitive) and
 `USER_NOTIFICATIONS_CHANNEL` (string, default empty). It is passed to workers as an argument
 (it is picklable). Remove `StrategyExecutor._get_environment()` and the `os.environ` copying in
 `execute_strategy_batch`.
 
-**ENV-2.** Never log `ALLOCATIONS_API_KEY` or the Ably key. Give `RuntimeSettings` a `__repr__`
+**ENV-2.** Never log `ZEHNLABS_API_KEY` or the Ably key. Give `RuntimeSettings` a `__repr__`
 that masks the API key.
 
 ---
@@ -932,8 +932,9 @@ so it is testable without HTTP.
 Total timeout 10 s per request (`aiohttp.ClientTimeout(total=10)`). Failures are logged and never raised.
 Disabled or no channel → log at INFO and skip (unchanged).
 **NTF-4.** The body is at most 3,500 bytes in UTF-8. If it is longer, keep the header lines and the first notes,
-then end with `…and <k> more notes (see logs, run <run_id>)`.
-**NTF-5.** Keep `_mask_account_id` and `_format_strategy_name` and use them in every message.
+then end with `…and <k> more notes (see logs)`.
+**NTF-5.** Keep `_mask_account_id` and `_format_strategy_name` and use them in every message. Never
+send a full account ID or run ID to ntfy, including inside an error or note.
 
 ### 11.2 Common header lines (every message)
 
@@ -941,7 +942,6 @@ then end with `…and <k> more notes (see logs, run <run_id>)`.
 Account: U***456
 Strategy: ETF Blend 200-35
 Time: 2026-11-20 15:52:10 ET
-Run: 20261120-155210-U1234567-a3f9
 ```
 
 ### 11.3 Kinds
@@ -951,7 +951,7 @@ Run: 20261120-155210-U1234567-a3f9
 | `SUCCESS` | `✅ Rebalance complete` | `Orders: <s> sells, <b> buys` · `Portfolio value ≈ $<value_end>` · `Cash ≈ $<cash_end>` · notes (if any) |
 | `FAILED_WILL_RETRY` | `⚠️ Rebalance failed: will retry` | `Error: <error_message>` · what happened (RUN-1) · `Retry: <Day YYYY-MM-DD> <HH:MM> ET (next market open).` · notes |
 | `QUEUED_MARKET_CLOSED` | `🕒 Market closed: rebalance queued` | `No orders were placed.` · `Will run: <Day YYYY-MM-DD> <HH:MM> ET.` |
-| `FAILED_FINAL` | `❌ Rebalance failed: not retried` | `Error: …` · what happened · `This account will not be retried automatically. Fix the issue, then run: ./tools/rebalance.sh -account <full id> -exec rebalance` · notes |
+| `FAILED_FINAL` | `❌ Rebalance failed: not retried` | `Error: …` · what happened · `This account will not be retried automatically. Fix the issue, then run: ./tools/rebalance.sh -account <account-id> -exec rebalance` · notes |
 | `SKIPPED_FINAL` | `❌ Scheduled rebalance skipped` | `The strategy was already running at <time>, so this scheduled run was skipped and will not be retried. Run it manually if needed.` |
 | `PREVIEW` | `🔎 Rebalance preview` | `Planned: <s> sells, <b> buys` · one line per order, e.g. `SELL 55 XLE (market)`, `BUY 62 TLT ≤ $92.11` (max 20 lines; then `…and k more`) · `Portfolio value ≈ $V0` · notes |
 | `PREVIEW_FAILED` | `❌ Rebalance preview failed` | `Error: …` |
@@ -997,7 +997,7 @@ run's outcome or its notification.
 
 **BOOT-1. Startup order** in `EventBrokerApp.start()`:
 1. config is already loaded at import (unchanged);
-2. build `RuntimeSettings` (fails if `ALLOCATIONS_API_KEY` is missing or blank, with the existing message);
+2. build `RuntimeSettings` (fails if `ZEHNLABS_API_KEY` is missing or blank, with the existing message);
 3. `load_accounts` (§5.2);
 4. **strategy check:** for each strategy in the registry, fetch allocations once. Any failure stops
    startup with `Strategy '<s>' is not available from the allocations API (<reason>). Check the name and your subscription.`
@@ -1122,7 +1122,7 @@ non-matching files.
 `tests/test_security_startup.py` must keep testing these behaviours, adapted to the new module
 layout where patch targets moved: the Ably key is fetched once at startup and its value never
 appears in logs or errors; HTTP failures and invalid payloads stop startup without exposing the
-response body; the auth URL derivation and invalid-base rejection; a missing `ALLOCATIONS_API_KEY`
+response body; the auth URL derivation and invalid-base rejection; a missing `ZEHNLABS_API_KEY`
 fails before anything else; startup failure starts neither the scheduler nor the manual watcher;
 `main()` waits for signal shutdown; manual events route to the executor; scheduled events use the
 loaded accounts. Do not delete any of these assertions. Update only the setup they need.

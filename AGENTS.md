@@ -251,7 +251,7 @@ Set in `.env` file or docker-compose environment:
 **Required**:
 - `IB_USERNAME`: Interactive Brokers username
 - `IB_PASSWORD`: Interactive Brokers password
-- `ALLOCATIONS_API_KEY`: Unified Zehnlabs key from Telegram `/api`, used for allocations and startup `/rebalance-auth`. Copy/store it safely; `/api regen` replaces a lost key and `/api revoke` invalidates it. `/me` reports account/subscription details only.
+- `ZEHNLABS_API_KEY`: Unified Zehnlabs key from Telegram `/api`, used for allocations and startup `/rebalance-auth`. Copy/store it safely; `/api regen` replaces a lost key and `/api revoke` invalidates it. `/me` reports account/subscription details only.
 
 The subscriber fetches the shared read-only Ably key once at startup and passes it directly to the existing SDK. SDK reconnects retain that in-memory key. Subscribers configure no separate Ably key. See `docs/security-migration.md` for installation, container recreation, startup errors, and manual Ably rotation.
 

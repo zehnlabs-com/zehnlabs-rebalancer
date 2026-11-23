@@ -76,7 +76,7 @@ def make_executor(tmp: str, notifier=None, clock=None, config=None, registry=Non
             config=config or _config(tmp),
             settings=SimpleNamespace(trading_mode="paper", ib_port=None,
                                      allocations_base_url="http://x",
-                                     allocations_api_key="zehnlabs-key"),
+                                     zehnlabs_api_key="zehnlabs-key"),
             registry=registry or SimpleNamespace(
                 get=lambda i: ACCOUNT if i == "U123456" else None,
                 for_strategy=lambda s: [ACCOUNT], strategies=lambda: ["strategy-one"],
@@ -202,7 +202,7 @@ class PoolFailureTests(unittest.IsolatedAsyncioTestCase):
                  patch("app.services.strategy_executor.ProcessPoolExecutor",
                        side_effect=lambda *a, **k: never.next_pool()):
                 ex = SEM.StrategyExecutor(
-                    config=_config(tmp), settings=SimpleNamespace(allocations_api_key="k",
+                    config=_config(tmp), settings=SimpleNamespace(zehnlabs_api_key="k",
                                                                   trading_mode="paper"),
                     registry=SimpleNamespace(get=lambda i: None), clock=FakeClock(datetime(2026, 11, 20, 10, 0)),
                     notifier=RecordingNotifier(), records=_run_records(tmp),
@@ -242,7 +242,7 @@ class ForkContextTests(unittest.TestCase):
              patch("app.services.strategy_executor.ProcessPoolExecutor", side_effect=factory):
             with tempfile.TemporaryDirectory() as tmp:
                 SEM.StrategyExecutor(
-                    config=_config(tmp), settings=SimpleNamespace(allocations_api_key="k"),
+                    config=_config(tmp), settings=SimpleNamespace(zehnlabs_api_key="k"),
                     registry=SimpleNamespace(), clock=FakeClock(datetime(2026, 11, 20, 10, 0)),
                     notifier=RecordingNotifier(), records=_run_records(tmp),
                     logger=logging.getLogger("test_executor"),

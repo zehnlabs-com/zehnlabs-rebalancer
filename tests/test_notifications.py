@@ -28,7 +28,7 @@ ACCOUNT_ID = "U123456"
 
 def base_result(**kw) -> AccountRunResult:
     data = dict(
-        run_id="20261120-155210-1234567-a3f9",
+        run_id="20261120-155210-U123456-a3f9",
         account_id=ACCOUNT_ID,
         strategy_name="etf-blend-200-35",
         mode="live",
@@ -54,7 +54,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn("Account: U***456", msg.body)
         self.assertIn("Strategy: ETF Blend 200-35", msg.body)
         self.assertIn("Time: 2026-11-20 15:52:10 ET", msg.body)
-        self.assertIn("Run: 20261120-155210-1234567-a3f9", msg.body)
+        self.assertNotIn(result.run_id, msg.body)
         self.assertIn("Orders: 1 sells, 0 buys", msg.body)
         self.assertIn("Portfolio value ≈ $104,031.45", msg.body)
         self.assertIn("Cash ≈ $335.00", msg.body)
@@ -88,6 +88,8 @@ class RenderTests(unittest.TestCase):
                 msg = render(result, ctx)
                 self.assertEqual(msg.title, title)
                 self.assertIn(key, msg.body)
+                self.assertNotIn(result.run_id, msg.body)
+                self.assertNotIn(ACCOUNT_ID, msg.body)
 
     def test_preview_order_lines_and_cap(self):
         result = base_result(
@@ -108,7 +110,7 @@ class RenderTests(unittest.TestCase):
         msg = render(result, NotificationContext(kind=NotificationKind.SUCCESS))
         self.assertLessEqual(len(msg.body.encode("utf-8")), 3500)
 
-    def test_long_body_is_truncated_with_run_id(self):
+    def test_long_body_is_truncated_without_run_id(self):
         long_text = "x" * 120
         result = base_result(
             notes=[NoteOut(level="info", text=f"{long_text} {i}") for i in range(200)]
@@ -116,7 +118,33 @@ class RenderTests(unittest.TestCase):
         msg = render(result, NotificationContext(kind=NotificationKind.SUCCESS))
         self.assertLessEqual(len(msg.body.encode("utf-8")), 3500)
         self.assertIn("…and", msg.body)
-        self.assertIn("see logs, run 20261120-155210-1234567-a3f9", msg.body)
+        self.assertIn("see logs", msg.body)
+        self.assertNotIn(result.run_id, msg.body)
+
+    def test_sensitive_identifiers_are_redacted_at_render_boundary(self):
+        result = base_result(
+            outcome=RunOutcome.FAILED,
+            error_message=f"Account {ACCOUNT_ID} is unavailable for run "
+                          "20261120-155210-U123456-a3f9.",
+            notes=[NoteOut(level="warning", text=f"Check account {ACCOUNT_ID}.")],
+        )
+        for kind in (
+            NotificationKind.SUCCESS,
+            NotificationKind.FAILED_WILL_RETRY,
+            NotificationKind.FAILED_FINAL,
+            NotificationKind.PREVIEW,
+            NotificationKind.PREVIEW_FAILED,
+        ):
+            with self.subTest(kind=kind):
+                msg = render(result, NotificationContext(kind=kind))
+                self.assertNotIn(ACCOUNT_ID, msg.body)
+                self.assertNotIn(result.run_id, msg.body)
+
+    def test_masks_valid_account_id_without_three_consecutive_digits(self):
+        result = base_result(account_id="A1B2C3", run_id="safe-run")
+        msg = render(result, NotificationContext(kind=NotificationKind.SUCCESS))
+        self.assertIn("Account: A*B*C*", msg.body)
+        self.assertNotIn("A1B2C3", msg.body)
 
     def test_what_happened_lines(self):
         none = base_result(outcome=RunOutcome.FAILED, error_message="e")

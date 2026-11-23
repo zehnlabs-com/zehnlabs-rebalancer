@@ -126,7 +126,7 @@ class EventBrokerApp:
             return
         async with AllocationsClient(
             self.settings.allocations_base_url,
-            self.settings.allocations_api_key,
+            self.settings.zehnlabs_api_key,
             self.config.api.allocation_timeout_seconds,
         ) as client:
             for strategy in strategies:

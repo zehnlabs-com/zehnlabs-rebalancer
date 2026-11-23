@@ -196,7 +196,7 @@ Pass:
 - parent returns `MARKET_CLOSED` without starting a worker or connecting to IBKR for that run;
 - no order is placed;
 - the account appears exactly once in test-local `scheduled.json`;
-- exactly one queued notification and one run-record line share the run ID.
+- exactly one queued notification and one run-record line agree on account, strategy, time, and outcome.
 
 Leave the schedule entry in place for the real 09:35 job.
 
@@ -272,7 +272,7 @@ Pass:
 - planned market sells and limit buys agree with the preceding preview;
 - a normal limit buy is accepted if the plan contains one;
 - every placed order reaches a terminal recorded state;
-- exactly one notification and one JSONL record share the run ID;
+- exactly one notification and one JSONL record agree on account, strategy, time, and outcome;
 - raw private worker lines contain strategy, account, and the real run ID, with no duplicate copy;
   only the sanitized export replaces the account with `[REDACTED]`.
 
@@ -344,15 +344,16 @@ is stopped; the final audit rejects any other marker. Remove it when the audit e
 
 Collect raw evidence privately under mode-`0700`
 `/home/ubuntu/docker-projects/zehnlabs-rebalancer-test/data/paper-acceptance/private`; individual
-files are mode `0600`. Raw app logs, run records, notification bodies, and run IDs contain account
-identifiers and are never pasted, attached, committed, or copied to a shared location.
+files are mode `0600`. Raw app logs, run records, and run IDs contain account identifiers;
+notification bodies contain private financial details. None are pasted, attached, committed, or
+copied to a shared location.
 
 Collect there:
 
 - timestamped Gateway and worker logs;
 - probe JSON for outside/RTH snapshots, manual cancellation, cash/funds, reconnect, and final audit;
 - test-local `data/runs/*.jsonl`;
-- test-only ntfy messages, correlated by run ID;
+- test-only ntfy messages, matched to run records by account, strategy, time, and outcome;
 - paper broker order states and fills;
 - exact v3 source commit and image ID;
 - before/after production health and image IDs.
@@ -389,7 +390,7 @@ that same aggregate rather than reinterpreting individual probe output.
 | Own reconnect | Visible and cancelled by next run | Invisible or cancellation unconfirmed |
 | Logs | Worker lines carry strategy/account/run ID once | Missing run ID or duplicate lines |
 | Records | One JSONL line per result | Missing or duplicate record |
-| Notifications | One test-topic message per account/run | Missing, duplicate, or mismatched run ID |
+| Notifications | One test-topic message per account/run | Missing, duplicate, or mismatched account/strategy/time/outcome |
 | Cleanup | Every order terminal; test stack stopped | Any unknown or working order remains |
 
 ## Cutover after a passing paper report
