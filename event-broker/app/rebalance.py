@@ -110,12 +110,7 @@ async def _fills(conn: BrokerConnection, handles: Sequence[str]) -> list[Execute
 
 
 def _trimmed_symbols(plan: BuyPlan) -> list[str]:
-    for n in plan.notes:
-        if n.level == "warning" and n.text.startswith("Not enough cash for all buys:"):
-            body = n.text[len("Not enough cash for all buys: "):]
-            body = body[:-1] if body.endswith(".") else body
-            return [part.split(" ")[0] for part in body.split("; ")]
-    return []
+    return list(plan.trimmed_symbols)
 
 
 async def _wait_for_orders(

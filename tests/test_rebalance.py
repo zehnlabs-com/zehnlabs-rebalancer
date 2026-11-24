@@ -24,6 +24,11 @@ from broker_connector_base import (  # noqa: E402
 from app.accounts import AccountConfig  # noqa: E402
 from app.rebalance import rebalance_account, RunDeps  # noqa: E402
 from app.results import FailureReason, RunOutcome  # noqa: E402
+from app.services.notification_service import (  # noqa: E402
+    NotificationContext,
+    NotificationKind,
+    render,
+)
 
 from fakes import FakeAllocations, FakeBrokerConnection, FakeClock  # noqa: E402
 
@@ -171,6 +176,59 @@ class PreviewTests(unittest.IsolatedAsyncioTestCase):
         result = await rebalance_account(ACCOUNT, "preview", "manual",
                                          make_deps(conn, open_clock(hour=8)))
         self.assertEqual(result.outcome, RunOutcome.PREVIEWED)
+
+
+class BuyTrimmingPropagationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_preview_and_live_report_only_final_trimmed_symbols(self):
+        state = AccountState(
+            account_id=ACCOUNT.account_id,
+            cash=50100.0,
+            net_liquidation=100000.0,
+            positions=(Position("A", 1990), Position("B", 300)),
+        )
+        quotes = {
+            "A": Quote("A", bid=10.0, ask=10.0),
+            "B": Quote("B", bid=100.0, ask=100.0),
+            "C": Quote("C", bid=710.0, ask=710.0),
+        }
+        allocations = FakeAllocations({
+            ACCOUNT.strategy_name: {"A": 0.20, "B": 0.30, "C": 0.50},
+        })
+
+        for mode, outcome, notification_kind in (
+            ("preview", RunOutcome.PREVIEWED, NotificationKind.PREVIEW),
+            ("live", RunOutcome.SUCCEEDED, NotificationKind.SUCCESS),
+        ):
+            with self.subTest(mode=mode):
+                conn = FakeBrokerConnection(
+                    state=state,
+                    quotes=quotes,
+                    fill={"A": ("fill", 10.0), "C": ("fill", 710.0)},
+                )
+                result = await rebalance_account(
+                    ACCOUNT, mode, "manual",
+                    make_deps(conn, open_clock(), allocs=allocations),
+                )
+
+                self.assertEqual(result.outcome, outcome)
+                self.assertEqual(
+                    [(order.symbol, order.quantity) for order in result.planned_buys],
+                    [("A", 10), ("C", 69)],
+                )
+                self.assertEqual(result.record["trimmed"], ["C"])
+                warnings = [note.text for note in result.notes if note.level == "warning"]
+                self.assertEqual(
+                    warnings,
+                    ["Not enough cash for all buys: C reduced by 1 share."],
+                )
+
+                message = render(
+                    result,
+                    NotificationContext(kind=notification_kind),
+                )
+                self.assertIn(warnings[0], message.body)
+                self.assertNotIn("A skipped", message.body)
+                self.assertNotIn("A reduced", message.body)
 
 
 class GuardTests(unittest.IsolatedAsyncioTestCase):

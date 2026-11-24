@@ -6,6 +6,7 @@ Pure functions. `EPS = 1e-9` is used everywhere a tolerance is needed.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Dict, Mapping, Optional, Sequence
 
@@ -14,6 +15,15 @@ from broker_connector_base import Position, Quote, Side
 from .models import BuyPlan, Note, PlannedOrder, SellPlan
 
 EPS = 1e-9
+
+
+@dataclass
+class _BuyCandidate:
+    symbol: str
+    weight: float
+    raw_quantity: float
+    quantity: float
+    limit_price: float
 
 
 def round_quantity(x: float, supports_fractional: bool) -> float:
@@ -105,12 +115,12 @@ def plan_buys(
     supports_fractional: bool,
 ) -> BuyPlan:
     """Build the buy plan (PRD §7.5–7.6). Buys size at the ask and never spend
-    more than `budget = cash_base - reserve`, trimming the lowest-weight buys first."""
+    more than `budget = cash_base - reserve`, funding higher-weight buys first."""
     marks = _marks_held(positions_after, quotes)
     held = _held_quantities(positions_after)
     total_value_1 = cash_base + sum(p.quantity * marks[p.symbol] for p in positions_after)
 
-    raw_buys: list[dict] = []  # mutable working rows: symbol, quantity, limit
+    raw_buys: list[_BuyCandidate] = []
     notes: list[Note] = []
     for symbol in sorted(targets):
         w = targets[symbol]
@@ -124,15 +134,18 @@ def plan_buys(
         limit = limit_price(ref, slippage_pct)
         qty = round_quantity(gap / ref, supports_fractional)
         if qty == 0 and held.get(symbol, 0.0) == 0:
+            minimum_quantity = (
+                "the broker minimum of 0.000001 share"
+                if supports_fractional else "one share"
+            )
             notes.append(Note(
                 "info",
-                f"{symbol}: target ${w * total_value_1:,.2f} is less than one share "
-                f"(${ref:,.2f}); not bought.",
+                f"{symbol}: target ${w * total_value_1:,.2f} would buy less than "
+                f"{minimum_quantity} at ${ref:,.2f}; not bought.",
             ))
             continue
         if qty > 0:
-            raw_buys.append({"symbol": symbol, "orig": qty, "quantity": qty,
-                             "limit": limit, "weight": w})
+            raw_buys.append(_BuyCandidate(symbol, w, qty, qty, limit))
 
     budget = cash_base - reserve
     if budget <= 0:
@@ -147,38 +160,52 @@ def plan_buys(
             cash_base=cash_base, reserve=reserve, budget=budget,
         )
 
-    cost = sum(row["quantity"] * row["limit"] for row in raw_buys)
-    if cost > budget + EPS:
-        for row in sorted(raw_buys, key=lambda r: (r["weight"], r["symbol"])):
-            if cost <= budget + EPS:
-                break
-            need = math.ceil((cost - budget) / row["limit"] - EPS)
-            cut = min(row["quantity"], need)
-            if cut > 0:
-                row["quantity"] -= cut
-                cost -= cut * row["limit"]
+    raw_cost = sum(row.quantity * row.limit_price for row in raw_buys)
+    if raw_cost > budget + EPS:
+        remaining = budget
+        for row in sorted(
+            raw_buys, key=lambda candidate: (candidate.weight, candidate.symbol), reverse=True
+        ):
+            affordable = round_quantity(remaining / row.limit_price, supports_fractional)
+            funded = min(row.raw_quantity, affordable)
+            if funded * row.limit_price > remaining + EPS:
+                unit = 0.000001 if supports_fractional else 1.0
+                funded = round_quantity(funded - unit, supports_fractional)
+            row.quantity = funded
+            remaining -= row.quantity * row.limit_price
 
-    trimmed = [r for r in raw_buys if r["quantity"] < r["orig"]]
+    final_cost = sum(row.quantity * row.limit_price for row in raw_buys)
+    if final_cost > budget + EPS:
+        raise RuntimeError(
+            f"Buy plan cost ${final_cost:.10f} exceeds budget ${budget:.10f}."
+        )
+
+    trimmed = [row for row in raw_buys if row.quantity < row.raw_quantity]
     if trimmed:
         parts = []
-        for r in sorted(trimmed, key=lambda x: x["symbol"]):
-            diff = r["orig"] - r["quantity"]
-            if r["quantity"] == 0:
-                parts.append(f"{r['symbol']} skipped ({r['weight'] * 100:.1f}% target)")
+        for row in sorted(trimmed, key=lambda candidate: candidate.symbol):
+            diff = row.raw_quantity - row.quantity
+            if row.quantity == 0:
+                parts.append(f"{row.symbol} skipped ({row.weight * 100:.1f}% target)")
             else:
-                plural = "share" if diff == 1 else "shares"
-                parts.append(f"{r['symbol']} reduced by {int(diff)} {plural}")
+                display_diff = (
+                    f"{diff:.6f}".rstrip("0").rstrip(".")
+                    if supports_fractional else str(int(diff))
+                )
+                plural = "share" if abs(diff - 1) <= EPS else "shares"
+                parts.append(f"{row.symbol} reduced by {display_diff} {plural}")
         notes.append(Note("warning", "Not enough cash for all buys: " + "; ".join(parts) + "."))
 
     orders = tuple(
-        PlannedOrder(r["symbol"], Side.BUY, r["quantity"], r["limit"])
-        for r in raw_buys
-        if r["quantity"] > 0
+        PlannedOrder(row.symbol, Side.BUY, row.quantity, row.limit_price)
+        for row in sorted(raw_buys, key=lambda candidate: candidate.symbol)
+        if row.quantity > 0
     )
     return BuyPlan(
         total_value=total_value_1,
         orders=orders,
         notes=tuple(notes),
+        trimmed_symbols=tuple(sorted(row.symbol for row in trimmed)),
         cash_base=cash_base,
         reserve=reserve,
         budget=budget,

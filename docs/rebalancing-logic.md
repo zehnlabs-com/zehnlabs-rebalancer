@@ -6,9 +6,10 @@ account run, and the retry rules. The authoritative specification is the PRD
 (`docs/refactor-prd.md`, §7, §8.1, §10.5); this document is a plain-language
 summary of that behaviour with no history.
 
-All quantities are whole shares for a whole-share broker (IBKR is one). Prices
-are `float`. Everywhere a tolerance is needed an epsilon of `1e-9` is used.
-Share quantities are always rounded **down** — never up.
+All quantities are whole shares for a whole-share broker (IBKR is one), or
+multiples of `0.000001` for a fractional broker. Prices are `float`. Everywhere
+a tolerance is needed an epsilon of `1e-9` is used. Share quantities are always
+rounded **down** to the broker's granularity — never up.
 
 ## 1. Targets and replacements
 
@@ -74,24 +75,32 @@ its own orders — the next run cancels them. The connection is always closed.
 
 ### Selling
 
-For each position not in the targets, sell all whole shares (fractional
-leftover is reported as a note to be sold manually). For a target that is over
-its weight, sell the excess shares. A sell never exceeds the whole shares held.
+For each position not in the targets, sell all quantity supported by the broker
+(an IBKR fractional leftover is reported as a note to be sold manually). For a
+target that is over its weight, sell the excess shares. A sell never exceeds the
+held quantity.
 
 ### Buying
 
 - `reserve` = `minimum_cash_reserve_percent` / 100 × `V0` (the start-of-run
   value), computed once. `budget` = `cash_base − reserve`.
 - For each target in symbol order: `gap` = weight × `V1 − held_value`. If `gap`
-  is at least one whole share, plan a buy of `round-down(gap / buy_reference)`
-  shares at the limit price.
+  is at least one broker-sized unit, plan a buy of
+  `round_quantity(gap / buy_reference)` shares at the limit price.
 - If `budget ≤ 0`, no buys are placed (a warning is added).
-- Total cost is the sum of `quantity × limit` per buy. If it exceeds `budget`,
-  trim the **lowest-weight** buys first (ties by symbol), removing exactly the
-  needed shares at once, until `cost ≤ budget + eps`. A buy cut to zero is
-  dropped. Trimmed symbols are reported in a warning note.
-- Invariant: after trimming, even if every buy fills at its limit price, cash
-  stays at or above the reserve.
+- Total cost is the sum of `quantity × limit` per buy. If the raw cost exceeds
+  `budget`, start with the full budget and fund raw buys by target weight
+  descending, using reverse-alphabetical symbol priority for equal weights.
+  Each final quantity is the smaller of its raw quantity and what the remaining
+  budget affords at the limit price, rounded down with `round_quantity`.
+- Emit funded orders in normal symbol order. Derive the warning and the run
+  record's trimmed-symbol list from raw versus final quantities; fractional
+  reductions show up to six decimals.
+- Recompute the final limit-price cost and fail closed with an explicit runtime
+  check if it exceeds `budget + eps`.
+- The result is maximal under this target-weight priority: for every underfunded
+  raw buy, the final remainder cannot buy one more broker-sized unit. It is not
+  a global portfolio optimizer.
 
 ## 4. Retry rules
 
@@ -114,9 +123,12 @@ its weight, sell the excess shares. A sell never exceeds the whole shares held.
 
 ## 5. Safety invariants
 
-- A sell never exceeds the whole shares held; a position never goes negative.
-- Every share quantity is > 0 and whole (for a whole-share broker).
-- After buys fill at their limits, cash stays at or above the reserve (minus a
-  cent) whenever any buy is placed.
+- A sell never exceeds the held quantity; a position never goes negative.
+- Every emitted share quantity is > 0 and respects broker granularity.
+- Every final buy quantity is no greater than its raw desired quantity.
+- Final limit-price cost is at most `budget + 1e-9`; buys never spend the
+  configured reserve.
+- No underfunded raw buy can take one more broker-sized unit from the final
+  remainder.
 - The buy plan contains no sells and the sell plan no buys.
 - Identical inputs give an identical plan (deterministic symbol order).

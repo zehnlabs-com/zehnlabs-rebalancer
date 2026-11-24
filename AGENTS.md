@@ -27,7 +27,7 @@ The system uses modular Python packages for broker-agnostic design:
 3. **rebalance-calculator** (v1.0.0) - Broker-agnostic calculation engine (pure functions; no I/O, no clock, no logging)
    - `validate_and_scale`: validate and scale raw API weights to sum to 1.0 (or empty list = sell everything)
    - `apply_replacements`: apply a built-in replacement set (REP)
-   - `plan_sells` / `plan_buys`: two-phase whole-share rebalance plans (§7); sells market, buys limit, cash-floor trim removes the lowest-weight buys first
+   - `plan_sells` / `plan_buys`: two-phase broker-granularity rebalance plans (§7); sells market, buys limit, and constrained cash funds higher-weight buys first
 
 4. **ibkr-connector** (v1.0.0) - IBKR-specific implementation
    - `IBKRConnection`: Implements `BrokerConnection` against the IBKR Gateway API
@@ -300,7 +300,7 @@ The rebalancer uses a two-phase approach to handle cash constraints:
 Each IBKR connection requires a unique `client_id` to prevent collisions. It is the **int of the digits** of the account ID (e.g. `U123456` → `123456`), from `AccountConfig.client_id`. It is consistent across restarts and has no hash collisions.
 
 ### Cash Reserve & Retries
-- A cash floor of `trading.minimum_cash_reserve_percent` (default 0.25%) of the account's total value is never spent. When cash is short, the **lowest-weight** buys are trimmed first, share by share.
+- A cash floor of `trading.minimum_cash_reserve_percent` (default 0.25%) of the account's total value is never spent. When cash is short, raw buys are funded from highest target weight to lowest; equal weights use reverse-alphabetical funding priority, while orders are still emitted in normal symbol order.
 - A live run that fails, or that starts while the market is closed, is queued and retried **once** at the next market open (09:35 ET). A scheduled run that fails is not retried. There is no PDT protection.
 
 ## Manual Event System

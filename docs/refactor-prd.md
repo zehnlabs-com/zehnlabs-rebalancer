@@ -40,13 +40,15 @@
 ## 1. Goal
 
 Each rebalance run should bring an account as close as possible to its strategy's target weights,
-using whole shares, without ever spending more cash than the account has. Failed runs are retried
+using the broker's share granularity, without ever spending more cash than the account has. Failed runs are retried
 once, at the next market open, with fresh data. The user gets exactly one notification per account
 per run. A second broker or a second notification channel can be added later without redesign.
+Here, "as close as possible" means a plan is maximal under the target-weight funding priority in
+§7.6. It does not mean solving a global portfolio-optimization problem.
 
 The current engine is replaced by a smaller one. **The behaviour changes on purpose**: no
-0.5-point "close enough" band, no scaling of buys, whole shares rounded down, and a percentage cash
-floor. §3 lists every change.
+0.5-point "close enough" band, no scaling of buys, quantities rounded down to broker granularity,
+and a percentage cash floor. §3 lists every change.
 
 ## 2. Glossary
 
@@ -71,6 +73,7 @@ floor. §3 lists every change.
 | **Foreign order** | A working order on this account placed by anything else (manual in TWS or the mobile app, another program). |
 | **Working order** | An order that is not yet filled, cancelled or rejected. |
 | **Whole-share broker** | A broker whose `supports_fractional` is `False`. IBKR is one. |
+| **Fractional broker** | A broker whose `supports_fractional` is `True`; quantities use `0.000001` granularity. |
 
 ## 3. Scope
 
@@ -78,10 +81,10 @@ floor. §3 lists every change.
 
 | ID | Change |
 |---|---|
-| SCOPE-1 | The 0.5-point allocation band (`allocation_threshold_percent`) is **removed**. Every run aligns every symbol to its target as closely as whole shares allow. Deposits are invested on the next run. |
+| SCOPE-1 | The 0.5-point allocation band (`allocation_threshold_percent`) is **removed**. Every run aligns every symbol to its target as closely as broker granularity allows. Deposits are invested on the next run. |
 | SCOPE-2 | The 1% commission divisor (`commission_rate`) is removed. |
-| SCOPE-3 | Buy scaling, the adjustment pass, `max_account_utilization`, the "skip if cash is low and all symbols are held" shortcut, and the separate affordability filter are removed. One rule replaces them: when cash is short, reduce the **lowest-weight** buys first, share by share (§7.6). |
-| SCOPE-4 | Share quantities are always **rounded down** to whole shares. A target smaller than one share is not bought. The README promise "at least one share of every target" is removed. |
+| SCOPE-3 | Buy scaling, the adjustment pass, `max_account_utilization`, the "skip if cash is low and all symbols are held" shortcut, and the separate affordability filter are removed. One rule replaces them: when cash is short, fund raw buys by target weight descending, with reverse-alphabetical symbol priority for equal weights (§7.6). |
+| SCOPE-4 | Share quantities are always **rounded down** to broker granularity: whole shares for IBKR and `0.000001` for a fractional broker. An IBKR target smaller than one share is not bought. The README promise "at least one share of every target" is removed. |
 | SCOPE-5 | `cash_reserve_percent` (per account) and `minimum_cash_reserve_usd` (global, $100) are removed. They are replaced by one global setting, `trading.minimum_cash_reserve_percent` (default `0.25`). |
 | SCOPE-6 | PDT protection is removed completely (setting, service, state files, notification wording). |
 | SCOPE-7 | Replacement sets move into code. `replacement-sets.yaml` and its Docker mount are deleted. The replacement algorithm is fixed (§7.2). |
@@ -586,38 +589,56 @@ for symbol, w in targets (symbol order):
     qty = round_quantity(gap / ref, sf)
     if qty == 0:
         if held_qty(symbol) == 0: add info note
-            "{symbol}: target ${w×V1:,.2f} is less than one share (${ref:,.2f}); not bought."
+            minimum = "one share" if not sf else "the broker minimum of 0.000001 share"
+            "{symbol}: target ${w×V1:,.2f} would buy less than {minimum} at ${ref:,.2f}; not bought."
         continue
-    emit PlannedOrder(symbol, BUY, qty, limit)
+    append raw buy (symbol, target weight, qty, limit)
 budget = cash_base − reserve
 if budget <= 0: drop all buys (CASH-3 note) and return
-cost = Σ(qty × limit)
-# trim: lowest target weight first; ties by symbol (alphabetical)
-for order in sorted(buys, key=(targets[symbol], symbol)):
-    if cost <= budget + EPS: break
-    cut = min(order.qty, ceil((cost − budget) / order.limit − EPS))    # whole shares
-    (fractional broker: cut = min(order.qty, math.ceil((cost − budget) / order.limit × 1_000_000 − EPS) / 1_000_000))
-    order.qty −= cut; cost −= cut × order.limit
-drop orders with qty == 0
+raw_cost = Σ(raw.qty × raw.limit)
+if raw_cost > budget + EPS:
+    remaining = budget
+    # highest target weight first; equal weights use reverse-alphabetical symbols
+    for raw in sorted(raw_buys, key=(target weight, symbol), reverse=True):
+        affordable = round_quantity(remaining / raw.limit, sf)
+        final.qty = min(raw.qty, affordable)
+        if final.qty × raw.limit > remaining + EPS:
+            reduce final.qty by one broker-sized unit
+        remaining −= final.qty × raw.limit
+else:
+    final quantities = raw quantities
+trimmed = raw symbols whose final quantity is less than their raw quantity
+emit positive final orders in normal symbol order
+final_cost = Σ(final.qty × final.limit)
+if final_cost > budget + EPS: raise RuntimeError        # fail closed in optimized builds too
 ```
 
-**BUY-1.** After trimming, `Σ(qty × limit) <= budget + EPS`. This is the safety invariant: even if
-every buy fills at its limit price, cash stays at or above the reserve.
-**BUY-2.** Trimming reduces the lowest-weight buy first, one share at a time in effect (the `cut`
-formula removes exactly the needed number of shares at once), and drops it at zero before moving
-to the next lowest. This is intended: the smallest targets absorb a shortfall.
-**BUY-3.** If anything was trimmed, add a warning note listing each trimmed symbol:
+**BUY-1.** Recompute the final limit-price cost and check at runtime that
+`Σ(final_qty × limit) <= budget + EPS`. This is the safety invariant: even if every buy fills at
+its limit price, cash stays at or above the reserve. An `assert` alone is not sufficient.
+**BUY-2.** Higher target weights receive budget first. For equal weights, reverse-alphabetical
+funding priority preserves the existing rule that alphabetically earlier symbols absorb a
+shortfall first. A higher-priority unaffordable share does not block affordable lower-priority
+shares. This priority defines "as close as possible"; it is not a global portfolio optimizer.
+**BUY-3.** Derive warnings and the run record's `trimmed` symbols from the final quantities. If
+anything was trimmed, add a warning note listing each genuinely trimmed symbol:
 `Not enough cash for all buys: TLT reduced by 3 shares; XLU skipped (2.0% target).`
-**BUY-4.** The buy plan never contains sells. Positions over target at this point are left alone.
-**BUY-5.** Buys are limit orders at `limit`, DAY, regular hours only.
+Fractional reductions show up to six decimals and must never be truncated through `int`.
+**BUY-4.** Every final quantity is between zero and its raw desired quantity and respects broker
+granularity (whole shares for IBKR, `0.000001` for a fractional broker). For every underfunded raw
+buy, the final remaining budget cannot fund one more broker-sized unit at that buy's limit price.
+**BUY-5.** The buy plan never contains sells. Positions over target at this point are left alone.
+**BUY-6.** Buys are emitted in normal symbol order and are limit orders at `limit`, DAY, regular
+hours only. Funding priority never changes placement order.
 
 ### 7.7 Properties the planner must satisfy (tested in §16.2)
 
-P1 no sell exceeds the held whole shares; P2 no position goes negative; P3 every quantity is > 0
-and whole (for a whole-share broker); P4 after buys fill at their limits, `cash >= reserve − 0.01`
-whenever any buy is placed; P5 the buy plan has no sells, and the sell plan no buys; P6 targets sum to
-1 within 1e-9 (or are empty); P7 identical inputs give an identical plan (deterministic order: sells
-by symbol, buys by symbol).
+P1 no sell exceeds the held quantity; P2 no position goes negative; P3 every emitted quantity is
+positive and respects broker granularity; P4 `Σ(final_qty × limit) <= budget + EPS` whenever the
+budget is positive; P5 the buy plan has no sells, and the sell plan no buys; P6 targets sum to 1
+within 1e-9 (or are empty); P7 identical inputs give an identical plan (deterministic order: sells
+by symbol, buys by symbol); P8 `0 <= final_qty <= raw_qty`; P9 for every underfunded raw buy, the
+final remainder cannot fund one more broker-sized unit at its limit price.
 
 ---
 
@@ -986,8 +1007,9 @@ each order placed and its final state; and the outcome.
 **REC-2.** Record fields: `run_id, account_id, strategy_name, mode, source, started_at, finished_at,
 outcome, failure_reason, error_message, raw_weights, scaled_weights, targets, replacement_set,
 state0 {cash, net_liquidation, positions}, prices {symbol: {bid, ask, last, close, bar_close, used_mark, mark_source, buy_reference, buy_source}},
-V0, reserve, planned_sells, cash_base, V1, planned_buys, trimmed, executed, notes`. Values that do
-not apply are `null`. Build the record inside the worker (it has the data) and return it in
+V0, reserve, planned_sells, cash_base, V1, planned_buys, trimmed, executed, notes`. `trimmed`
+contains only symbols whose final buy quantity is less than its raw desired quantity. Values that
+do not apply are `null`. Build the record inside the worker (it has the data) and return it in
 `AccountRunResult.record`.
 **REC-3.** At startup and after each write, delete `*.jsonl` files in that directory whose date is
 more than 30 days before today. Never delete other files.
@@ -1076,9 +1098,13 @@ of the account ID).
 
 **Planner (`tests/test_planner.py`)**
 - Every example in Appendix A gives exactly the stated numbers.
-- Property test over at least 5,000 random accounts with a fixed seed (1–12 targets, prices
+- Property test over at least 5,000 random whole-share and fractional-broker accounts with a fixed seed (1–12 targets, prices
   $2–$1,200, spreads 0.01%–1%, random holdings including fractional quantities and non-target
-  symbols, cash $0–$200k): P1–P7 (§7.7). Buys are assumed to fill at their limit price.
+  symbols, cash $0–$200k): P1–P9 (§7.7). Buys are assumed to fill at their limit price.
+- Deterministic examples cover a cheap buy restored after an expensive-share overshoot, partial
+  restoration, final-only warning text, equal-weight tie priority, an unaffordable expensive share
+  followed by affordable cheaper shares, exact/±$0.01/EPS budget boundaries, zero/negative budget,
+  empty/no-shortfall plans, and sub-$1 fractional buys at six-decimal granularity.
 - Weight-0 target held: sold exactly `floor(held)`, never `held + 1`.
 - Missing price for a held symbol → `NoPriceError`; buy with no bid but an ask → bought.
 - `round_quantity` edge cases: `99.9999999999 → 100` (within EPS of 100, so treated as floating-point noise),
@@ -1105,7 +1131,8 @@ cash wait → fresh quotes → buys); preview places nothing and does not cancel
 connection; foreign order → `FOREIGN_ORDERS` and no orders placed; cancel not confirmed → fail before
 the snapshot; sell rejected → no buys, and "what happened" lists the fills; buy timeout →
 `ORDERS_TIMED_OUT` and no cancel call; NLV mismatch > 2% → fail; cash lag → `cash_base` uses the
-lower number; an unexpected exception → `INTERNAL_ERROR`, never raised.
+lower number; an unexpected exception → `INTERNAL_ERROR`, never raised; preview and live records
+and notifications list only symbols genuinely trimmed in the final buy plan.
 
 **Executor, retry, scheduler (`tests/test_executor.py`, `tests/test_scheduler.py`)**: every row of
 the §10.5 table (file changes and notification kind); dropped trigger while running → no
@@ -1233,7 +1260,8 @@ Targets: SPY 0.45, TLT 0.35, GLD 0.20 (XLE not a target).
   **V1 = 104,026.45**.
 - Untrimmed buys (sized at the ask): GLD 23, SPY 8, TLT 4. Limits: GLD 251.35, SPY 603.10, TLT 90.50.
   Cost at limit 10,967.85 > budget **10,734.92** (10,734.921375).
-- Trim the lowest weight first (GLD, 0.20): cut = ceil((10,967.85 − 10,734.92) / 251.35) = 1.
+- Fund in target-weight priority: SPY 8 and TLT 4 are fully funded first; the remaining budget
+  funds 22 of the 23 raw GLD shares.
 - **Final buys: GLD 22 ≤ $251.35, SPY 8 ≤ $603.10, TLT 4 ≤ $90.50.** Cost at limit 10,716.50 ≤ budget.
   Note: `Not enough cash for all buys: GLD reduced by 1 share.`
 
@@ -1242,7 +1270,8 @@ Targets: SPY 0.45, TLT 0.35, GLD 0.20 (XLE not a target).
 All cash, $10,000.00. Targets AAA 0.5, BBB 0.3, CCC 0.2. Quotes AAA 9.99 / 10.01, BBB 19.99 / 20.01,
 CCC 24.99 / 25.01. Reserve 25.00. Budget 9,975.00.
 Untrimmed: AAA 499, BBB 149, CCC 79. Limits 10.06, 20.11, 25.14. Cost 10,002.39.
-Trim CCC (lowest weight) by ceil(27.39 / 25.14) = 2. **Final: AAA 499, BBB 149, CCC 77**, cost 9,952.11.
+Fund AAA and BBB fully first; the remaining budget funds 77 of the 79 raw CCC shares.
+**Final: AAA 499, BBB 149, CCC 77**, cost 9,952.11.
 
 ### A.4 Cash below the reserve (`plan_buys` called directly)
 

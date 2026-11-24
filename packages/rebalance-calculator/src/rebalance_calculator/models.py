@@ -61,3 +61,4 @@ class BuyPlan:
     cash_base: float = 0.0
     reserve: float = 0.0
     budget: float = 0.0
+    trimmed_symbols: Tuple[str, ...] = field(default_factory=tuple)

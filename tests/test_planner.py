@@ -123,6 +123,175 @@ class AppendixA3Tests(unittest.TestCase):
         self.assertTrue(any("CCC reduced by 2" in n.text for n in bplan.notes))
 
 
+class BuyPriorityAllocationTests(unittest.TestCase):
+    def test_restores_cheaper_buy_after_expensive_share_absorbs_shortfall(self):
+        positions = [Position("A", 1990), Position("B", 300)]
+        targets = {"A": 0.20, "B": 0.30, "C": 0.50}
+        quotes = {
+            "A": Quote("A", bid=10.0, ask=10.0),
+            "B": Quote("B", bid=100.0, ask=100.0),
+            "C": Quote("C", bid=710.0, ask=710.0),
+        }
+
+        plan = plan_buys(
+            positions, targets, quotes, cash_base=50100.0, reserve=250.0,
+            slippage_pct=0.5, supports_fractional=False,
+        )
+
+        self.assertEqual(
+            [(order.symbol, order.quantity, order.limit_price) for order in plan.orders],
+            [("A", 10, 10.05), ("C", 69, 713.55)],
+        )
+
+    def test_restored_production_shaped_buy_is_not_reported_as_trimmed(self):
+        targets = {"C": 0.95, "PDBC": 0.05}
+        quotes = {
+            "C": Quote("C", bid=100.0, ask=100.0),
+            "PDBC": Quote("PDBC", bid=17.38, ask=17.38),
+        }
+
+        plan = plan_buys(
+            [], targets, quotes, cash_base=400.0, reserve=100.0,
+            slippage_pct=0.5, supports_fractional=False,
+        )
+
+        self.assertEqual(
+            [(order.symbol, order.quantity, order.limit_price) for order in plan.orders],
+            [("C", 2, 100.50), ("PDBC", 1, 17.47)],
+        )
+        self.assertEqual(
+            [note.text for note in plan.notes if note.level == "warning"],
+            ["Not enough cash for all buys: C reduced by 1 share."],
+        )
+        self.assertEqual(plan.trimmed_symbols, ("C",))
+
+    def test_partially_restores_lower_priority_target(self):
+        targets = {"H": 0.80, "L": 0.20}
+        quotes = {
+            "H": Quote("H", bid=100.0, ask=100.0),
+            "L": Quote("L", bid=10.0, ask=10.0),
+        }
+
+        plan = plan_buys(
+            [], targets, quotes, cash_base=1000.0, reserve=250.0,
+            slippage_pct=0.5, supports_fractional=False,
+        )
+
+        self.assertEqual(
+            [(order.symbol, order.quantity) for order in plan.orders],
+            [("H", 7), ("L", 4)],
+        )
+        self.assertTrue(any("L reduced by 16 shares" in note.text for note in plan.notes))
+
+    def test_equal_weights_fund_reverse_alphabetically_and_emit_symbol_order(self):
+        targets = {"A": 0.50, "B": 0.50}
+        quotes = {
+            "A": Quote("A", bid=100.0, ask=100.0),
+            "B": Quote("B", bid=100.0, ask=100.0),
+        }
+
+        plan = plan_buys(
+            [], targets, quotes, cash_base=400.0, reserve=98.5,
+            slippage_pct=0.5, supports_fractional=False,
+        )
+
+        self.assertEqual(
+            [(order.symbol, order.quantity) for order in plan.orders],
+            [("A", 1), ("B", 2)],
+        )
+
+    def test_unaffordable_expensive_target_does_not_block_cheaper_target(self):
+        targets = {"EXPENSIVE": 0.80, "CHEAP": 0.20}
+        quotes = {
+            "EXPENSIVE": Quote("EXPENSIVE", bid=200.0, ask=200.0),
+            "CHEAP": Quote("CHEAP", bid=10.0, ask=10.0),
+        }
+
+        plan = plan_buys(
+            [], targets, quotes, cash_base=300.0, reserve=200.0,
+            slippage_pct=0.5, supports_fractional=False,
+        )
+
+        self.assertEqual(
+            [(order.symbol, order.quantity) for order in plan.orders],
+            [("CHEAP", 6)],
+        )
+
+    def test_budget_boundaries(self):
+        targets = {"A": 1.0}
+        quotes = {"A": Quote("A", bid=10.0, ask=10.0)}
+        cash_base = 10.10
+        cases = [
+            ("exact", 10.05, 1),
+            ("one cent below", 10.04, 0),
+            ("one cent above", 10.06, 1),
+            ("inside EPS", 10.05 - EPS, 1),
+            ("outside EPS", 10.05 - 2 * EPS, 0),
+        ]
+
+        for name, budget, expected_quantity in cases:
+            with self.subTest(name=name):
+                plan = plan_buys(
+                    [], targets, quotes, cash_base=cash_base,
+                    reserve=cash_base - budget, slippage_pct=0.5,
+                    supports_fractional=False,
+                )
+                quantity = plan.orders[0].quantity if plan.orders else 0
+                self.assertEqual(quantity, expected_quantity)
+
+    def test_zero_negative_empty_and_no_shortfall_behavior(self):
+        targets = {"A": 1.0}
+        quotes = {"A": Quote("A", bid=10.0, ask=10.0)}
+        for reserve in (100.0, 101.0):
+            with self.subTest(reserve=reserve):
+                plan = plan_buys([], targets, quotes, 100.0, reserve, 0.5, False)
+                self.assertEqual(plan.orders, ())
+                self.assertEqual(len(plan.notes), 1)
+                self.assertIn("no buys placed", plan.notes[0].text)
+
+        empty = plan_buys([], {}, {}, 100.0, 25.0, 0.5, False)
+        self.assertEqual(empty.orders, ())
+        self.assertEqual(empty.notes, ())
+
+        no_shortfall = plan_buys([], targets, quotes, 10.10, 0.04, 0.5, False)
+        self.assertEqual([(o.symbol, o.quantity) for o in no_shortfall.orders], [("A", 1)])
+        self.assertEqual(no_shortfall.notes, ())
+
+    def test_fractional_sub_dollar_buy_uses_six_decimals_in_order_and_warning(self):
+        targets = {"A": 1.0}
+        quotes = {"A": Quote("A", bid=0.67, ask=0.67)}
+
+        plan = plan_buys(
+            [], targets, quotes, cash_base=1.0, reserve=0.5,
+            slippage_pct=0.5, supports_fractional=True,
+        )
+
+        self.assertEqual(
+            [(order.symbol, order.quantity, order.limit_price) for order in plan.orders],
+            [("A", 0.7425, 0.6734)],
+        )
+        self.assertEqual(
+            [note.text for note in plan.notes if note.level == "warning"],
+            ["Not enough cash for all buys: A reduced by 0.750037 shares."],
+        )
+
+    def test_fractional_target_below_broker_minimum_has_accurate_note(self):
+        plan = plan_buys(
+            [], {"A": 1.0}, {"A": Quote("A", bid=1.0, ask=1.0)},
+            cash_base=0.0000005, reserve=0.0,
+            slippage_pct=0.0, supports_fractional=True,
+        )
+
+        self.assertEqual(plan.orders, ())
+        self.assertEqual(
+            [note.text for note in plan.notes],
+            [
+                "A: target $0.00 would buy less than the broker minimum of "
+                "0.000001 share at $1.00; not bought."
+            ],
+        )
+
+
 class AppendixA4Tests(unittest.TestCase):
     def test_cash_below_reserve_no_buys(self):
         positions_after = [Position("SPY", 10)]
@@ -145,6 +314,7 @@ class PlannerPropertyTests(unittest.TestCase):
     def test_properties_hold_over_random_accounts(self):
         rng = random.Random(424242)
         for _ in range(5000):
+            supports_fractional = bool(rng.getrandbits(1))
             n_targets = rng.randint(1, 12)
             # targets sum to 1
             raw = [rng.uniform(0.0, 1.0) for _ in range(n_targets)]
@@ -179,21 +349,25 @@ class PlannerPropertyTests(unittest.TestCase):
             # P6 targets sum to 1 within 1e-9
             self.assertAlmostEqual(sum(targets.values()), 1.0, places=9)
 
-            sell_plan = plan_sells(positions, targets, marks_for_positions, cash, False)
-            # P1 no sell exceeds held whole shares; P3 whole & >0
+            sell_plan = plan_sells(
+                positions, targets, marks_for_positions, cash, supports_fractional
+            )
+            # P1 no sell exceeds held shares; P3 valid broker granularity & >0
             held = {}
             for p in positions:
                 held[p.symbol] = held.get(p.symbol, 0.0) + p.quantity
             for o in sell_plan.orders:
                 self.assertGreater(o.quantity, 0)
-                self.assertEqual(o.quantity, math.floor(o.quantity))
-                self.assertLessEqual(o.quantity, math.floor(held[o.symbol]) + EPS)
+                if supports_fractional:
+                    self.assertAlmostEqual(o.quantity, round(o.quantity, 6), places=9)
+                else:
+                    self.assertEqual(o.quantity, math.floor(o.quantity))
+                self.assertLessEqual(o.quantity, held[o.symbol] + EPS)
                 self.assertEqual(o.side, Side.SELL)
             # P5 sell plan no buys
             self.assertTrue(all(o.side == Side.SELL for o in sell_plan.orders))
 
-            # simulate sells at sell reference; whole-share -> proceeds
-            sold_cash = cash
+            # simulate the post-sell positions
             next_positions = []
             for p in positions:
                 sell_qty = 0.0
@@ -205,20 +379,54 @@ class PlannerPropertyTests(unittest.TestCase):
                     next_positions.append(Position(p.symbol, remain))
 
             reserve = 0.0025 * sell_plan.total_value
-            bplan = plan_buys(next_positions, targets, quotes, cash, reserve, 0.5, False)
+            bplan = plan_buys(
+                next_positions, targets, quotes, cash, reserve, 0.5,
+                supports_fractional,
+            )
+            repeated = plan_buys(
+                next_positions, targets, quotes, cash, reserve, 0.5,
+                supports_fractional,
+            )
+            self.assertEqual(bplan, repeated)
+
+            raw_plan = plan_buys(
+                next_positions, targets, quotes, cash, -1_000_000_000.0, 0.5,
+                supports_fractional,
+            )
+            raw_by_symbol = {order.symbol: order for order in raw_plan.orders}
+            final_by_symbol = {order.symbol: order for order in bplan.orders}
 
             # P5 buy plan no sells
             self.assertTrue(all(o.side == Side.BUY for o in bplan.orders))
-            # P3 whole & positive on buys
+            self.assertEqual(
+                [o.symbol for o in bplan.orders],
+                sorted(o.symbol for o in bplan.orders),
+            )
+            # P3 broker granularity and positivity on buys.
             for o in bplan.orders:
                 self.assertGreater(o.quantity, 0)
-                self.assertEqual(o.quantity, math.floor(o.quantity))
+                if supports_fractional:
+                    self.assertAlmostEqual(o.quantity, round(o.quantity, 6), places=9)
+                else:
+                    self.assertEqual(o.quantity, math.floor(o.quantity))
 
-            # P2 no position goes negative: sells never exceed held whole shares (P1)
+            # P2 no position goes negative: sells never exceed held quantities (P1)
             # and buys never spend more than available cash (P4), so positions stay >= 0.
-            if bplan.orders:
-                cost = sum(o.quantity * o.limit_price for o in bplan.orders)
-                self.assertGreaterEqual(bplan.budget - cost, -0.01)
+            cost = sum(o.quantity * o.limit_price for o in bplan.orders)
+            if bplan.budget <= 0:
+                self.assertEqual(bplan.orders, ())
+                continue
+
+            self.assertLessEqual(cost, bplan.budget + EPS)
+            remainder = bplan.budget - cost
+            unit = 0.000001 if supports_fractional else 1.0
+            for symbol, raw_order in raw_by_symbol.items():
+                final_quantity = final_by_symbol.get(symbol)
+                final_quantity = final_quantity.quantity if final_quantity else 0.0
+                self.assertGreaterEqual(final_quantity, 0.0)
+                self.assertLessEqual(final_quantity, raw_order.quantity + EPS)
+                if final_quantity < raw_order.quantity - EPS:
+                    self.assertGreater(unit * raw_order.limit_price, remainder + EPS)
 
     def test_p7_identical_inputs_identical_plan(self):
         positions = [Position("GLD", 60), Position("SPY", 70), Position("TLT", 400)]
