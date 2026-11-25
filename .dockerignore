@@ -1,0 +1,37 @@
+# Python cache and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+
+# Environment and secrets
+.env
+.env.test
+.env.local
+accounts.test.yaml
+
+# Version control
+.git/
+.gitignore
+
+# Documentation (except CLAUDE.md)
+*.md
+!CLAUDE.md
+
+# IDE and editor files
+.vscode/
+.idea/
+.DS_Store
+
+# Node modules
+node_modules/
+
+# CRITICAL: packages/ must NOT be excluded (needed for Docker build)

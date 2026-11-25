@@ -1,4 +1,4 @@
-"""Rebalance planning: sell plan, buy plan, cash floor (PRD §7.4–7.6).
+"""Reserve-aware sell and buy planning (PRD §7.4–7.6).
 
 Pure functions. `EPS = 1e-9` is used everywhere a tolerance is needed.
 """
@@ -7,14 +7,17 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
-from typing import Dict, Mapping, Optional, Sequence
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
+from typing import Dict, Final, Mapping, Optional, Sequence
 
 from broker_connector_base import Position, Quote, Side
 
 from .models import BuyPlan, Note, PlannedOrder, SellPlan
 
 EPS = 1e-9
+FRACTIONAL_QUANTITY_UNIT: Final[float] = 0.000001
+_FRACTIONAL_QUANTITY_SCALE: Final[int] = int(round(1.0 / FRACTIONAL_QUANTITY_UNIT))
+_FRACTIONAL_QUANTITY_QUANTUM: Final[Decimal] = Decimal(str(FRACTIONAL_QUANTITY_UNIT))
 
 
 @dataclass
@@ -30,9 +33,8 @@ def round_quantity(x: float, supports_fractional: bool) -> float:
     """Round down a quantity to the broker's granularity (PRD §7)."""
     if x <= 0:
         return 0.0
-    if not supports_fractional:
-        return float(math.floor(x + EPS))
-    return math.floor(x * 1_000_000 + EPS) / 1_000_000
+    scale = _broker_scale(supports_fractional)
+    return math.floor(x * scale + EPS) / scale
 
 
 def limit_price(reference: float, slippage_pct: float) -> float:
@@ -65,16 +67,103 @@ def _held_quantities(positions: Sequence[Position]) -> Dict[str, float]:
     return held
 
 
+def _priority_order(candidates: Sequence[_BuyCandidate]) -> list[_BuyCandidate]:
+    """Lowest target weight first; equal weights use descending symbol order."""
+    by_descending_symbol = sorted(candidates, key=lambda row: row.symbol, reverse=True)
+    return sorted(by_descending_symbol, key=lambda row: row.weight)
+
+
+def _broker_scale(supports_fractional: bool) -> int:
+    return _FRACTIONAL_QUANTITY_SCALE if supports_fractional else 1
+
+
+def _format_fractional_quantity(quantity: float) -> str:
+    value = Decimal(str(quantity)).quantize(_FRACTIONAL_QUANTITY_QUANTUM)
+    return format(value, "f").rstrip("0").rstrip(".")
+
+
+def _as_units(quantity: float, scale: int) -> int:
+    return int(round(quantity * scale))
+
+
+def _as_quantity(units: int, scale: int) -> float:
+    return units / scale
+
+
+def _affordable_units(available: float, price: float, scale: int) -> int:
+    """Maximum broker units affordable with `available`, without per-unit loops."""
+    if available <= 0:
+        return 0
+    units = int(
+        (Decimal(str(available)) * scale / Decimal(str(price))).to_integral_value(
+            rounding=ROUND_FLOOR
+        )
+    )
+    return max(0, units)
+
+
+def _fit_buys(
+    candidates: Sequence[_BuyCandidate], budget: float, supports_fractional: bool
+) -> None:
+    """Fit raw buys with the required removal and add-back passes in bulk."""
+    scale = _broker_scale(supports_fractional)
+    priority = _priority_order(candidates)
+    cost = sum(row.quantity * row.limit_price for row in candidates)
+
+    # Remove low-priority quantities until one partial reduction makes the plan fit.
+    for row in priority:
+        if cost <= budget + EPS:
+            break
+        cost_without_row = cost - row.quantity * row.limit_price
+        if cost_without_row > budget + EPS:
+            row.quantity = 0.0
+            cost = cost_without_row
+            continue
+        retained_units = min(
+            _as_units(row.quantity, scale),
+            _affordable_units(budget + EPS - cost_without_row, row.limit_price, scale),
+        )
+        row.quantity = _as_quantity(retained_units, scale)
+        cost = cost_without_row + row.quantity * row.limit_price
+        if cost > budget + EPS and retained_units > 0:
+            row.quantity = _as_quantity(retained_units - 1, scale)
+            cost = cost_without_row + row.quantity * row.limit_price
+        break
+
+    # Restore each reduced candidate once, using the same priority order.
+    for row in priority:
+        removed_units = _as_units(row.raw_quantity - row.quantity, scale)
+        if removed_units <= 0:
+            continue
+        restore_units = min(
+            removed_units,
+            _affordable_units(budget + EPS - cost, row.limit_price, scale),
+        )
+        if restore_units <= 0:
+            continue
+        row.quantity = _as_quantity(_as_units(row.quantity, scale) + restore_units, scale)
+        cost += _as_quantity(restore_units, scale) * row.limit_price
+        if cost > budget + EPS:
+            row.quantity = _as_quantity(_as_units(row.quantity, scale) - 1, scale)
+            cost -= _as_quantity(1, scale) * row.limit_price
+
+
 def plan_sells(
     positions: Sequence[Position],
     targets: Mapping[str, float],
     marks: Mapping[str, float],
     cash: float,
+    reserve: float,
     supports_fractional: bool,
 ) -> SellPlan:
-    """Build the sell plan (PRD §7.4). Marks are the caller-computed mark prices."""
+    """Build sells against strategy capital `max(0, V0 - reserve)`.
+
+    `reserve` is the fixed dollar reserve calculated by the caller from V0.
+    Marks are the caller-computed mark prices.
+    """
     ordered = sorted(positions, key=lambda p: p.symbol)
     total_value = cash + sum(p.quantity * marks[p.symbol] for p in ordered)
+    target_base = max(0.0, total_value - reserve)
     orders: list[PlannedOrder] = []
     notes: list[Note] = []
 
@@ -91,7 +180,7 @@ def plan_sells(
                     f"(fractional). Sell them manually in TWS or the IBKR app.",
                 ))
         else:  # a target that is over its weight
-            excess_value = p.quantity * marks[symbol] - w * total_value
+            excess_value = p.quantity * marks[symbol] - w * target_base
             if excess_value <= 0:
                 qty = 0
             else:
@@ -102,7 +191,11 @@ def plan_sells(
         if qty > 0:
             orders.append(PlannedOrder(symbol, Side.SELL, qty, None))
 
-    return SellPlan(total_value=total_value, orders=tuple(orders), notes=tuple(notes))
+    return SellPlan(
+        total_value=total_value,
+        orders=tuple(orders),
+        notes=tuple(notes),
+    )
 
 
 def plan_buys(
@@ -114,11 +207,16 @@ def plan_buys(
     slippage_pct: float,
     supports_fractional: bool,
 ) -> BuyPlan:
-    """Build the buy plan (PRD §7.5–7.6). Buys size at the ask and never spend
-    more than `budget = cash_base - reserve`, funding higher-weight buys first."""
+    """Build buys against strategy capital `max(0, V1 - reserve)`.
+
+    Raw quantities size at the buy reference. If their limit-price cost exceeds
+    `budget = cash_base - reserve`, the two-pass fitter removes and then adds
+    back quantities in ascending-weight, descending-symbol priority order.
+    """
     marks = _marks_held(positions_after, quotes)
     held = _held_quantities(positions_after)
     total_value_1 = cash_base + sum(p.quantity * marks[p.symbol] for p in positions_after)
+    target_base = max(0.0, total_value_1 - reserve)
 
     raw_buys: list[_BuyCandidate] = []
     notes: list[Note] = []
@@ -126,7 +224,8 @@ def plan_buys(
         w = targets[symbol]
         held_value = held.get(symbol, 0.0) * marks.get(symbol, 0.0)
         # marks only covers held symbols; an unheld target's held_value is 0.
-        gap = w * total_value_1 - held_value
+        desired_value = w * target_base
+        gap = desired_value - held_value
         if gap <= 0:
             continue
         quote = quotes[symbol]
@@ -135,12 +234,13 @@ def plan_buys(
         qty = round_quantity(gap / ref, supports_fractional)
         if qty == 0 and held.get(symbol, 0.0) == 0:
             minimum_quantity = (
-                "the broker minimum of 0.000001 share"
+                "the broker minimum of "
+                f"{_format_fractional_quantity(FRACTIONAL_QUANTITY_UNIT)} share"
                 if supports_fractional else "one share"
             )
             notes.append(Note(
                 "info",
-                f"{symbol}: target ${w * total_value_1:,.2f} would buy less than "
+                f"{symbol}: target ${desired_value:,.2f} would buy less than "
                 f"{minimum_quantity} at ${ref:,.2f}; not bought.",
             ))
             continue
@@ -162,23 +262,27 @@ def plan_buys(
 
     raw_cost = sum(row.quantity * row.limit_price for row in raw_buys)
     if raw_cost > budget + EPS:
-        remaining = budget
-        for row in sorted(
-            raw_buys, key=lambda candidate: (candidate.weight, candidate.symbol), reverse=True
-        ):
-            affordable = round_quantity(remaining / row.limit_price, supports_fractional)
-            funded = min(row.raw_quantity, affordable)
-            if funded * row.limit_price > remaining + EPS:
-                unit = 0.000001 if supports_fractional else 1.0
-                funded = round_quantity(funded - unit, supports_fractional)
-            row.quantity = funded
-            remaining -= row.quantity * row.limit_price
+        _fit_buys(raw_buys, budget, supports_fractional)
 
     final_cost = sum(row.quantity * row.limit_price for row in raw_buys)
     if final_cost > budget + EPS:
         raise RuntimeError(
             f"Buy plan cost ${final_cost:.10f} exceeds budget ${budget:.10f}."
         )
+
+    scale = _broker_scale(supports_fractional)
+    for row in raw_buys:
+        units = _as_units(row.quantity, scale)
+        if row.quantity < -EPS or row.quantity > row.raw_quantity + EPS:
+            raise RuntimeError(f"Buy quantity for {row.symbol} is outside its raw range.")
+        if abs(row.quantity - _as_quantity(units, scale)) > EPS:
+            raise RuntimeError(f"Buy quantity for {row.symbol} violates broker granularity.")
+        if row.quantity < row.raw_quantity - EPS:
+            unit_cost = row.limit_price / scale
+            if final_cost + unit_cost <= budget + EPS:
+                raise RuntimeError(
+                    f"Buy plan left enough budget for one more broker unit of {row.symbol}."
+                )
 
     trimmed = [row for row in raw_buys if row.quantity < row.raw_quantity]
     if trimmed:
@@ -189,7 +293,7 @@ def plan_buys(
                 parts.append(f"{row.symbol} skipped ({row.weight * 100:.1f}% target)")
             else:
                 display_diff = (
-                    f"{diff:.6f}".rstrip("0").rstrip(".")
+                    _format_fractional_quantity(diff)
                     if supports_fractional else str(int(diff))
                 )
                 plural = "share" if abs(diff - 1) <= EPS else "shares"

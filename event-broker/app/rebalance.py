@@ -361,17 +361,21 @@ async def rebalance_account(
                             f"(no live quote).",
                         ))
 
-                # ---- 10. sell plan ------------------------------------------- #
+                # ---- 10. fixed reserve + sell plan --------------------------- #
+                V0 = state0.cash + sum(
+                    p.quantity * marks[p.symbol] for p in state0.positions
+                )
+                reserve = (cfg.trading.minimum_cash_reserve_percent / 100.0) * V0
                 sell_plan = plan_sells(
                     state0.positions, final_targets, marks, state0.cash,
+                    reserve,
                     conn.supports_fractional,
                 )
-                V0 = sell_plan.total_value
                 for n in sell_plan.notes:
                     notes.append(_note(n.level, n.text))
                 # REC-2: record the snapshot before the cross-check, so an
                 # ACCOUNT_DATA_MISMATCH failure keeps the data it was judged on.
-                record.update({"V0": V0,
+                record.update({"V0": V0, "reserve": reserve,
                                "state0": {
                                    "cash": state0.cash,
                                    "net_liquidation": state0.net_liquidation,
@@ -389,14 +393,12 @@ async def rebalance_account(
                         return await fail(FailureReason.ACCOUNT_DATA_MISMATCH, message)
                     notes.append(_note("warning", message))
 
-                # ---- 11. reserve + log + preview ----------------------------- #
-                reserve = (cfg.trading.minimum_cash_reserve_percent / 100.0) * V0
+                # ---- 11. log + preview --------------------------------------- #
                 adapter.info(
                     "PLAN sells: %s | V0 $%s reserve $%s",
                     ", ".join(f"{o.symbol} -{int(o.quantity)}" for o in sell_plan.orders),
                     f"{V0:,.2f}", f"{reserve:,.2f}",
                 )
-                record["reserve"] = reserve
                 # REC-2 / M2: record the planned sell orders as soon as the plan is
                 # final, so a later failure still shows what the run was about to do.
                 planned_sells.extend(_plans_out(sell_plan.orders))

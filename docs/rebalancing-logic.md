@@ -52,9 +52,10 @@ For each account, one run (`rebalance_account`) performs these steps:
 8. Read the account state (cash, NetLiquidation, positions). Missing cash or
    NetLiquidation is an error — never treated as zero.
 9. Fetch quotes and compute marks.
-10. Compute the sell plan. Cross-check `V0` (our computed value) against IBKR's
+10. Compute `V0`, fix the dollar reserve from it, and compute the reserve-aware
+    sell plan. Cross-check `V0` (our computed value) against IBKR's
     NetLiquidation; a mismatch over 2% fails a live run (preview warns).
-11. Compute the cash reserve and log the plan. **Preview**: simulate the sells,
+11. Log the plan. **Preview**: simulate the sells,
     run the buy plan, and return a preview. Stop here.
 12. If there are sells, check the market is open, place all sells (market), and
     wait for them.
@@ -75,29 +76,39 @@ its own orders — the next run cancels them. The connection is always closed.
 
 ### Selling
 
-For each position not in the targets, sell all quantity supported by the broker
-(an IBKR fractional leftover is reported as a note to be sold manually). For a
-target that is over its weight, sell the excess shares. A sell never exceeds the
-held quantity.
+The fixed reserve is `minimum_cash_reserve_percent / 100 × V0`. Strategy capital
+for sells is `sell_target_base = max(0, V0 − reserve)`, so a target symbol's
+desired value is `weight × sell_target_base`. For each position not in the
+targets, sell all quantity supported by the broker (an IBKR fractional leftover
+is reported as a note to be sold manually). For a target position, sell the
+broker-granular quantity above its desired value. A sell never exceeds the held
+quantity. This can sell part of an otherwise proportioned fully invested account
+to establish the reserve.
 
 ### Buying
 
-- `reserve` = `minimum_cash_reserve_percent` / 100 × `V0` (the start-of-run
-  value), computed once. `budget` = `cash_base − reserve`.
-- For each target in symbol order: `gap` = weight × `V1 − held_value`. If `gap`
+- Reuse the dollar `reserve` computed from `V0`; never recompute it from `V1`.
+  `buy_target_base = max(0, V1 − reserve)` and `budget = cash_base − reserve`.
+- For each target in symbol order: `gap` = weight × `buy_target_base − held_value`. If `gap`
   is at least one broker-sized unit, plan a buy of
   `round_quantity(gap / buy_reference)` shares at the limit price.
 - If `budget ≤ 0`, no buys are placed (a warning is added).
-- Total cost is the sum of `quantity × limit` per buy. If the raw cost exceeds
-  `budget`, start with the full budget and fund raw buys by target weight
-  descending, using reverse-alphabetical symbol priority for equal weights.
-  Each final quantity is the smaller of its raw quantity and what the remaining
-  budget affords at the limit price, rounded down with `round_quantity`.
+- Total cost is the sum of `quantity × limit` per buy. If the raw plan already
+  fits within `budget + eps`, leave it unchanged. Otherwise use target weight
+  ascending, then symbol descending for equal weights, for both passes:
+  1. Remove a candidate completely if the plan without it is still over budget;
+     otherwise retain the maximum broker-granular quantity that makes the plan
+     fit, then stop the removal pass.
+  2. Visit candidates once in the same order and restore the maximum removed
+     quantity that fits. If the next unit is too expensive, continue because a
+     later candidate may be cheaper. Never restore above the raw quantity.
+  Both passes use bulk arithmetic rather than looping once per broker unit.
 - Emit funded orders in normal symbol order. Derive the warning and the run
   record's trimmed-symbol list from raw versus final quantities; fractional
   reductions show up to six decimals.
-- Recompute the final limit-price cost and fail closed with an explicit runtime
-  check if it exceeds `budget + eps`.
+- Recompute the final limit-price cost and fail closed if it exceeds
+  `budget + eps`, a quantity leaves `[0, raw]`, granularity is invalid, or any
+  still-trimmed candidate can afford another broker unit from the remainder.
 - The result is maximal under this target-weight priority: for every underfunded
   raw buy, the final remainder cannot buy one more broker-sized unit. It is not
   a global portfolio optimizer.

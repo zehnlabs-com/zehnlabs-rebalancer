@@ -57,10 +57,10 @@ FILLS = {
 }
 
 
-def cfg() -> AppConfig:
+def cfg(reserve_percent=0.25) -> AppConfig:
     c = AppConfig(
         trading={
-            "minimum_cash_reserve_percent": 0.25,
+            "minimum_cash_reserve_percent": reserve_percent,
             "buy_slippage_percent": 0.5,
             "order_timeout_seconds": 10,
             "order_status_check_interval_seconds": 0.1,
@@ -100,7 +100,7 @@ class HappyPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sell.filled_quantity, 100)
         self.assertEqual(sell.average_fill_price, 84.95)
         self.assertEqual(result.record["cash_base"], 10995.0)
-        self.assertAlmostEqual(result.cash_end, 335.0, places=2)
+        self.assertAlmostEqual(result.cash_end, 775.0, places=2)
         self.assertAlmostEqual(result.value_end, 104026.45, places=2)
         self.assertEqual([o.symbol for o in result.planned_sells], ["XLE"])
         self.assertEqual(len(result.planned_buys), 3)
@@ -139,8 +139,8 @@ class WorkerLoggingTests(unittest.IsolatedAsyncioTestCase):
         conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
         result, out, tag = await self._run_captured(conn, "live")
         self.assertIn(f"{tag} PLAN sells: XLE -100", out)
-        self.assertIn(f"{tag} PLAN buys: GLD +22", out)
-        self.assertIn(f"{tag} outcome: SUCCEEDED value_end=104,026.45 cash_end=335.00", out)
+        self.assertIn(f"{tag} PLAN buys: GLD +23", out)
+        self.assertIn(f"{tag} outcome: SUCCEEDED value_end=104,026.45 cash_end=775.00", out)
         self.assertEqual(out.count("outcome:"), 1)
 
     async def test_preview_and_failure_log_their_outcome(self):
@@ -213,7 +213,7 @@ class BuyTrimmingPropagationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.outcome, outcome)
                 self.assertEqual(
                     [(order.symbol, order.quantity) for order in result.planned_buys],
-                    [("A", 10), ("C", 69)],
+                    [("A", 5), ("C", 69)],
                 )
                 self.assertEqual(result.record["trimmed"], ["C"])
                 warnings = [note.text for note in result.notes if note.level == "warning"]
@@ -229,6 +229,98 @@ class BuyTrimmingPropagationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(warnings[0], message.body)
                 self.assertNotIn("A skipped", message.body)
                 self.assertNotIn("A reduced", message.body)
+
+
+class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_preview_and_live_share_fixed_reserve_and_target_base_rules(self):
+        state = AccountState(
+            account_id=ACCOUNT.account_id,
+            cash=50.0,
+            net_liquidation=1000.0,
+            positions=(Position("H", 850), Position("X", 100)),
+        )
+        targets = FakeAllocations({
+            ACCOUNT.strategy_name: {"H": 0.80, "M": 0.15, "L": 0.05},
+        })
+        quotes = {
+            symbol: Quote(symbol, bid=0.9, ask=1.1)
+            for symbol in ("H", "M", "L", "X")
+        }
+        fill = {
+            "H": ("fill", 0.9), "X": ("fill", 0.9),
+            "M": ("fill", 1.0), "L": ("fill", 1.0),
+        }
+        results = {}
+
+        for mode, outcome in (
+            ("preview", RunOutcome.PREVIEWED),
+            ("live", RunOutcome.SUCCEEDED),
+        ):
+            conn = FakeBrokerConnection(state=state, quotes=quotes, fill=fill)
+            result = await rebalance_account(
+                ACCOUNT, mode, "manual",
+                make_deps(conn, open_clock(), allocs=targets, app_config=cfg(5.0)),
+            )
+            self.assertEqual(result.outcome, outcome)
+            self.assertEqual(result.record["V0"], 1000.0)
+            self.assertEqual(result.record["reserve"], 50.0)
+            self.assertEqual(result.record["V0"] - result.record["reserve"], 950.0)
+            self.assertEqual(result.record["cash_base"], 221.0)
+            self.assertEqual(result.record["V1"], 981.0)
+            self.assertEqual(result.record["V1"] - result.record["reserve"], 931.0)
+            self.assertEqual(
+                [(order.symbol, order.quantity) for order in result.planned_sells],
+                [("H", 90), ("X", 100)],
+            )
+            self.assertEqual(
+                [(order.symbol, order.quantity) for order in result.planned_buys],
+                [("L", 28), ("M", 126)],
+            )
+            self.assertEqual(result.record["trimmed"], ["L"])
+            warnings = [note.text for note in result.notes if note.level == "warning"]
+            self.assertEqual(
+                warnings,
+                ["Not enough cash for all buys: L reduced by 14 shares."],
+            )
+            if mode == "preview":
+                self.assertEqual(conn.placed, [])
+            results[mode] = result
+
+        self.assertEqual(results["preview"].planned_sells, results["live"].planned_sells)
+        self.assertEqual(results["preview"].planned_buys, results["live"].planned_buys)
+        self.assertEqual(results["preview"].record["trimmed"], results["live"].record["trimmed"])
+
+    async def test_v1_below_original_reserve_produces_zero_target_base_and_no_buys(self):
+        state = AccountState(
+            account_id=ACCOUNT.account_id,
+            cash=0.0,
+            net_liquidation=1000.0,
+            positions=(Position("X", 10),),
+        )
+        quotes = {
+            "H": Quote("H", bid=1.0, ask=199.0),
+            "X": Quote("X", bid=1.0, ask=199.0),
+        }
+        allocations = FakeAllocations({ACCOUNT.strategy_name: {"H": 1.0}})
+
+        for mode, outcome in (
+            ("preview", RunOutcome.PREVIEWED),
+            ("live", RunOutcome.SUCCEEDED),
+        ):
+            conn = FakeBrokerConnection(
+                state=state, quotes=quotes, fill={"X": ("fill", 1.0)}
+            )
+            result = await rebalance_account(
+                ACCOUNT, mode, "manual",
+                make_deps(conn, open_clock(), allocs=allocations, app_config=cfg(5.0)),
+            )
+
+            self.assertEqual(result.outcome, outcome)
+            self.assertEqual(result.record["reserve"], 50.0)
+            self.assertEqual(result.record["V1"], 10.0)
+            self.assertLess(result.record["V1"], result.record["reserve"])
+            self.assertEqual(result.planned_buys, [])
+            self.assertFalse(any(order.side == Side.BUY for order in conn.placed))
 
 
 class GuardTests(unittest.IsolatedAsyncioTestCase):

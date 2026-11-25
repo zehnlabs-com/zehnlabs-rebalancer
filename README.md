@@ -50,7 +50,7 @@ For each enabled account, one run moves the portfolio toward its strategy's targ
 1. Targets are fetched from the allocations API, validated, and scaled to sum to exactly 100%, then replacements are applied if the account uses one ([Replacement Sets](#replacement-sets)). An empty target list means "sell everything".
 2. Shares are always rounded **down** to whole numbers. A target worth less than one share is simply not bought — there is no minimum purchase of one share.
 3. Sells are placed first (as **market** orders); once they fill, the updated cash is read and buys (as **limit** orders, sized from the ask plus a small slippage buffer) are placed.
-4. A **cash reserve** holds back `trading.minimum_cash_reserve_percent` of the account's total value (default 0.25%). Buys never spend below that reserve. If cash is short, the **lowest-weight** buys are trimmed first, share by share.
+4. A **cash reserve** is fixed once from the start-of-run account value (default 0.25%) and kept outside the strategy. Sell targets use start value minus the reserve; buy targets use post-sell value minus the same dollar reserve. If raw buys exceed the cash budget, lower-weight quantities are removed first and then added back once in the same priority order as cash permits.
 5. At the start of each live run the app cancels any of *its own* working orders. If it finds *foreign* working orders (placed manually in TWS or the mobile app), the run stops and warns instead of trading.
 
 ---
@@ -146,7 +146,7 @@ accounts:
 -   Most users do not need to modify this file
 -   Advanced users can optimize these settings as needed
 -   The file contains inline documentation for all parameters
--   `trading.minimum_cash_reserve_percent` (default `0.25`) is the cash floor as a percent of the account's total value. Setting it below 0.25% may not cover commissions on large purchases of low-priced shares.
+-   `trading.minimum_cash_reserve_percent` (default `0.25`) is the fixed cash allocation outside the strategy, calculated from the account's start-of-run value. Setting it below 0.25% may not cover commissions on large purchases of low-priced shares.
 
 Both files require a service restart after changes: `docker compose restart`
 

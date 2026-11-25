@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Corrected cash-reserve planning so strategy weights apply only to account value above the fixed
+  start-of-run reserve. Both sell and buy targets now exclude that same dollar reserve, and
+  over-budget buys use the deterministic removal/add-back priority rule.
 - Fixed concurrent IBKR account runs failing with warning 2101 by replacing the legacy
   single-account update subscription with one targeted multi-account subscription per connection.
 

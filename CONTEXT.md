@@ -44,7 +44,7 @@ _Avoid_: job, task group
 _Avoid_: exec, dry-run
 
 **Weight**:
-A fraction of the account (`0.25` means 25%). Weights from the API are fractions.
+A fraction of the account's strategy capital, excluding the fixed cash reserve (`0.25` means 25%). Weights from the API are fractions.
 _Avoid_: percent (the glossary uses the fraction everywhere)
 
 **Mark**:
@@ -64,8 +64,12 @@ _Avoid_: max price
 _Avoid_: net worth, NetLiq
 
 **Cash floor / reserve**:
-`minimum_cash_reserve_percent` of total value at the start of a run. Buys never take cash below it.
+`minimum_cash_reserve_percent` of total value at the start of a run (`V0`). It is a fixed dollar cash allocation outside the strategy, reused unchanged for sell and buy planning.
 _Avoid_: minimum cash, safety buffer
+
+**Target base**:
+Account value available to the strategy: `max(0, V0 − reserve)` for sells and `max(0, V1 − reserve)` for buys.
+_Avoid_: budget (budget is cash-only)
 
 **Budget**:
 Cash available for buys: cash base − reserve.

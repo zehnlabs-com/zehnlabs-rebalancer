@@ -22,6 +22,7 @@ wheels/
 
 # Environment
 .env
+.env.test
 .venv
 env/
 venv/
@@ -31,6 +32,7 @@ venv.bak/
 
 # Accounts
 accounts.yaml
+accounts.test.yaml
 clerk-users.json
 
 # IDE
@@ -46,7 +48,6 @@ clerk-users.json
 Thumbs.db
 
 # Docker
-.dockerignore
 docker-compose.override.yml
 
 # Logs
