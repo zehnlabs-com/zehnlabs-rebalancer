@@ -21,7 +21,10 @@ def write(raw: dict) -> Path:
 
 VALID = {
     "ibkr": {"request_timeout_seconds": 10.0, "ports": {"live_internal": 4003}},
-    "trading": {"minimum_cash_reserve_percent": 0.25},
+    "trading": {
+        "minimum_cash_reserve_percent": 0.25,
+        "optimization_timeout_seconds": 10.0,
+    },
     "service": {},
     "scheduler": {"market_open_time": "09:35"},
     "executor": {},
@@ -40,6 +43,7 @@ class LoadTests(unittest.TestCase):
         cfg = AppConfig()
         self.assertEqual(cfg.scheduler.market_open_time, "09:35")
         self.assertEqual(cfg.trading.minimum_cash_reserve_percent, 0.25)
+        self.assertEqual(cfg.trading.optimization_timeout_seconds, 10.0)
         self.assertEqual(cfg.api.rebalance_auth_timeout_seconds, 10)
         # Above IBKR's 11 s snapshot window (reqTickers ends on tickSnapshotEnd).
         self.assertEqual(cfg.ibkr.request_timeout_seconds, 15.0)
@@ -103,6 +107,14 @@ class RemovedKeyTests(unittest.TestCase):
 
 
 class RangeErrorTests(unittest.TestCase):
+    def test_optimization_timeout_bounds(self):
+        for value in (0.09, 60.01):
+            with self.subTest(value=value):
+                p = write({"trading": {"optimization_timeout_seconds": value}})
+                self.addCleanup(p.unlink)
+                with self.assertRaises(ValueError):
+                    load_config(p)
+
     def test_pydantic_range_error_surfaces_with_config_prefix(self):
         p = write({"trading": {"minimum_cash_reserve_percent": 99}})
         self.addCleanup(p.unlink)

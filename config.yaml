@@ -16,6 +16,7 @@ ibkr:
 trading:
   minimum_cash_reserve_percent: 0.25            # 0-5. Cash floor as % of the account's total value
   buy_slippage_percent: 0.5                     # 0-5. Limit price = buy reference * (1 + this/100)
+  optimization_timeout_seconds: 10.0            # 0.1-60, per optimization solve
   order_timeout_seconds: 300                    # 10-3600, per leg
   order_status_check_interval_seconds: 2.0      # 0.1-30
   cancel_confirm_timeout_seconds: 30            # 1-300

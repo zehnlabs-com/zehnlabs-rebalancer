@@ -71,6 +71,10 @@ class TradingConfig(BaseModel):
         default=0.5, ge=0, le=5,
         description="Limit price = buy reference * (1 + this/100)",
     )
+    optimization_timeout_seconds: float = Field(
+        default=10.0, ge=0.1, le=60.0,
+        description="Time limit passed to each portfolio optimization solve",
+    )
     order_timeout_seconds: int = Field(
         default=300, ge=10, le=3600, description="Per-leg order completion timeout"
     )

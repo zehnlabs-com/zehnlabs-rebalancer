@@ -3,6 +3,7 @@
 import logging
 import sys
 import unittest
+from unittest.mock import patch
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,11 +16,13 @@ _sys.path.insert(0, str(REPO / "event-broker"))
 from app_config import AppConfig  # noqa: E402
 from broker_connector_base import (  # noqa: E402
     AccountState,
+    NoPriceError,
     Position,
     Quote,
     Side,
     WorkingOrder,
 )
+from rebalance_calculator import OptimizationError  # noqa: E402
 
 from app.accounts import AccountConfig  # noqa: E402
 from app.rebalance import rebalance_account, RunDeps  # noqa: E402
@@ -62,6 +65,7 @@ def cfg(reserve_percent=0.25) -> AppConfig:
         trading={
             "minimum_cash_reserve_percent": reserve_percent,
             "buy_slippage_percent": 0.5,
+            "optimization_timeout_seconds": 10.0,
             "order_timeout_seconds": 10,
             "order_status_check_interval_seconds": 0.1,
             "cancel_confirm_timeout_seconds": 1,
@@ -100,7 +104,7 @@ class HappyPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sell.filled_quantity, 100)
         self.assertEqual(sell.average_fill_price, 84.95)
         self.assertEqual(result.record["cash_base"], 10995.0)
-        self.assertAlmostEqual(result.cash_end, 775.0, places=2)
+        self.assertAlmostEqual(result.cash_end, 355.0, places=2)
         self.assertAlmostEqual(result.value_end, 104026.45, places=2)
         self.assertEqual([o.symbol for o in result.planned_sells], ["XLE"])
         self.assertEqual(len(result.planned_buys), 3)
@@ -140,7 +144,7 @@ class WorkerLoggingTests(unittest.IsolatedAsyncioTestCase):
         result, out, tag = await self._run_captured(conn, "live")
         self.assertIn(f"{tag} PLAN sells: XLE -100", out)
         self.assertIn(f"{tag} PLAN buys: GLD +23", out)
-        self.assertIn(f"{tag} outcome: SUCCEEDED value_end=104,026.45 cash_end=775.00", out)
+        self.assertIn(f"{tag} outcome: SUCCEEDED value_end=104,026.45 cash_end=355.00", out)
         self.assertEqual(out.count("outcome:"), 1)
 
     async def test_preview_and_failure_log_their_outcome(self):
@@ -178,6 +182,148 @@ class PreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.outcome, RunOutcome.PREVIEWED)
 
 
+class OptimizedExecutionShapeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.state = AccountState(
+            account_id=ACCOUNT.account_id,
+            cash=0.0,
+            net_liquidation=1_000.0,
+            positions=(Position("A", 1), Position("B", 90)),
+        )
+        self.quotes = {
+            "A": Quote("A", bid=100.0, ask=100.0),
+            "B": Quote("B", bid=10.0, ask=10.0),
+        }
+        self.allocations = FakeAllocations({
+            ACCOUNT.strategy_name: {"A": 0.06, "B": 0.94},
+        })
+
+    async def test_preview_and_live_reuse_initial_sells_but_recalculate_final_buys(self):
+        preview_conn = FakeBrokerConnection(
+            state=self.state,
+            quotes=self.quotes,
+            fill={"A": ("fill", 80.0), "B": ("fill", 10.0)},
+        )
+        live_conn = FakeBrokerConnection(
+            state=self.state,
+            quotes=self.quotes,
+            fill={"A": ("fill", 80.0), "B": ("fill", 10.0)},
+        )
+
+        preview = await rebalance_account(
+            ACCOUNT,
+            "preview",
+            "manual",
+            make_deps(preview_conn, open_clock(), allocs=self.allocations),
+        )
+        live = await rebalance_account(
+            ACCOUNT,
+            "live",
+            "manual",
+            make_deps(live_conn, open_clock(), allocs=self.allocations),
+        )
+
+        self.assertEqual(preview.outcome, RunOutcome.PREVIEWED)
+        self.assertEqual(live.outcome, RunOutcome.SUCCEEDED)
+        self.assertEqual(preview.planned_sells, live.planned_sells)
+        self.assertEqual(
+            [(order.symbol, order.quantity) for order in preview.planned_buys],
+            [("B", 4)],
+        )
+        self.assertEqual(
+            [(order.symbol, order.quantity) for order in live.planned_buys],
+            [("B", 2)],
+        )
+        self.assertEqual(preview_conn.placed, [])
+        self.assertEqual(
+            [(order.symbol, order.side, order.quantity) for order in live_conn.placed],
+            [("A", Side.SELL, 1), ("B", Side.BUY, 2)],
+        )
+        self.assertEqual(live.record["trimmed"], ["A"])
+        self.assertEqual(
+            [(order["symbol"], order["quantity"]) for order in live.record["planned_buys"]],
+            [("B", 2)],
+        )
+
+    async def test_initial_optimization_failure_places_no_orders(self):
+        conn = FakeBrokerConnection(state=self.state, quotes=self.quotes)
+        with patch(
+            "app.rebalance.plan_sells",
+            side_effect=OptimizationError("initial optimization failed"),
+        ):
+            result = await rebalance_account(
+                ACCOUNT,
+                "live",
+                "manual",
+                make_deps(conn, open_clock(), allocs=self.allocations),
+            )
+        self.assertEqual(result.outcome, RunOutcome.FAILED)
+        self.assertEqual(result.failure_reason, FailureReason.OPTIMIZATION_FAILED)
+        self.assertEqual(conn.placed, [])
+
+    async def test_preview_buy_optimization_failure_places_no_orders(self):
+        conn = FakeBrokerConnection(state=self.state, quotes=self.quotes)
+        with patch(
+            "app.rebalance.plan_buys",
+            side_effect=OptimizationError("preview optimization failed"),
+        ):
+            result = await rebalance_account(
+                ACCOUNT,
+                "preview",
+                "manual",
+                make_deps(conn, open_clock(), allocs=self.allocations),
+            )
+        self.assertEqual(result.outcome, RunOutcome.FAILED)
+        self.assertEqual(result.failure_reason, FailureReason.OPTIMIZATION_FAILED)
+        self.assertEqual(conn.placed, [])
+        self.assertEqual([(order.symbol, order.quantity) for order in result.planned_sells], [("A", 1)])
+        self.assertEqual(result.planned_buys, [])
+
+    async def test_live_buy_optimization_failure_preserves_completed_sells(self):
+        conn = FakeBrokerConnection(
+            state=self.state,
+            quotes=self.quotes,
+            fill={"A": ("fill", 80.0)},
+        )
+        with patch(
+            "app.rebalance.plan_buys",
+            side_effect=OptimizationError("live optimization failed"),
+        ):
+            result = await rebalance_account(
+                ACCOUNT,
+                "live",
+                "manual",
+                make_deps(conn, open_clock(), allocs=self.allocations),
+            )
+        self.assertEqual(result.outcome, RunOutcome.FAILED)
+        self.assertEqual(result.failure_reason, FailureReason.OPTIMIZATION_FAILED)
+        self.assertEqual(
+            [(order.symbol, order.side, order.filled_quantity) for order in result.executed],
+            [("A", Side.SELL.value, 1)],
+        )
+        self.assertEqual(
+            [(order.symbol, order.side) for order in conn.placed],
+            [("A", Side.SELL)],
+        )
+        self.assertEqual(result.planned_buys, [])
+
+    async def test_missing_required_optimizer_price_is_a_pricing_failure(self):
+        conn = FakeBrokerConnection(state=self.state, quotes=self.quotes)
+        with patch(
+            "app.rebalance.plan_sells",
+            side_effect=NoPriceError("missing optimizer price"),
+        ):
+            result = await rebalance_account(
+                ACCOUNT,
+                "preview",
+                "manual",
+                make_deps(conn, open_clock(), allocs=self.allocations),
+            )
+        self.assertEqual(result.outcome, RunOutcome.FAILED)
+        self.assertEqual(result.failure_reason, FailureReason.PRICING_FAILED)
+        self.assertEqual(conn.placed, [])
+
+
 class BuyTrimmingPropagationTests(unittest.IsolatedAsyncioTestCase):
     async def test_preview_and_live_report_only_final_trimmed_symbols(self):
         state = AccountState(
@@ -213,13 +359,13 @@ class BuyTrimmingPropagationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.outcome, outcome)
                 self.assertEqual(
                     [(order.symbol, order.quantity) for order in result.planned_buys],
-                    [("A", 5), ("C", 69)],
+                    [("C", 70)],
                 )
-                self.assertEqual(result.record["trimmed"], ["C"])
+                self.assertEqual(result.record["trimmed"], ["A"])
                 warnings = [note.text for note in result.notes if note.level == "warning"]
                 self.assertEqual(
                     warnings,
-                    ["Not enough cash for all buys: C reduced by 1 share."],
+                    ["Not enough cash for all buys: A reduced by 5 shares."],
                 )
 
                 message = render(
@@ -227,8 +373,8 @@ class BuyTrimmingPropagationTests(unittest.IsolatedAsyncioTestCase):
                     NotificationContext(kind=notification_kind),
                 )
                 self.assertIn(warnings[0], message.body)
-                self.assertNotIn("A skipped", message.body)
-                self.assertNotIn("A reduced", message.body)
+                self.assertNotIn("C skipped", message.body)
+                self.assertNotIn("C reduced", message.body)
 
 
 class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -274,13 +420,16 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 [(order.symbol, order.quantity) for order in result.planned_buys],
-                [("L", 28), ("M", 126)],
+                [("L", 15), ("M", 139)],
             )
-            self.assertEqual(result.record["trimmed"], ["L"])
+            self.assertEqual(result.record["trimmed"], ["L", "M"])
             warnings = [note.text for note in result.notes if note.level == "warning"]
             self.assertEqual(
                 warnings,
-                ["Not enough cash for all buys: L reduced by 14 shares."],
+                [
+                    "Not enough cash for all buys: L reduced by 32 shares; "
+                    "M reduced by 1 share."
+                ],
             )
             if mode == "preview":
                 self.assertEqual(conn.placed, [])
@@ -290,7 +439,7 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results["preview"].planned_buys, results["live"].planned_buys)
         self.assertEqual(results["preview"].record["trimmed"], results["live"].record["trimmed"])
 
-    async def test_v1_below_original_reserve_produces_zero_target_base_and_no_buys(self):
+    async def test_initial_plan_fails_when_even_all_sells_cannot_establish_reserve(self):
         state = AccountState(
             account_id=ACCOUNT.account_id,
             cash=0.0,
@@ -303,10 +452,7 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
         }
         allocations = FakeAllocations({ACCOUNT.strategy_name: {"H": 1.0}})
 
-        for mode, outcome in (
-            ("preview", RunOutcome.PREVIEWED),
-            ("live", RunOutcome.SUCCEEDED),
-        ):
+        for mode in ("preview", "live"):
             conn = FakeBrokerConnection(
                 state=state, quotes=quotes, fill={"X": ("fill", 1.0)}
             )
@@ -315,12 +461,13 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 make_deps(conn, open_clock(), allocs=allocations, app_config=cfg(5.0)),
             )
 
-            self.assertEqual(result.outcome, outcome)
-            self.assertEqual(result.record["reserve"], 50.0)
-            self.assertEqual(result.record["V1"], 10.0)
-            self.assertLess(result.record["V1"], result.record["reserve"])
+            self.assertEqual(result.outcome, RunOutcome.FAILED)
+            self.assertEqual(result.failure_reason, FailureReason.OPTIMIZATION_FAILED)
+            self.assertIsNone(result.record["reserve"])
+            self.assertIsNone(result.record["cash_base"])
+            self.assertIsNone(result.record["V1"])
+            self.assertEqual(conn.placed, [])
             self.assertEqual(result.planned_buys, [])
-            self.assertFalse(any(order.side == Side.BUY for order in conn.placed))
 
 
 class GuardTests(unittest.IsolatedAsyncioTestCase):

@@ -2,9 +2,12 @@
 
 ## Unreleased
 
-- Corrected cash-reserve planning so strategy weights apply only to account value above the fixed
-  start-of-run reserve. Both sell and buy targets now exclude that same dollar reserve, and
-  over-budget buys use the deterministic removal/add-back priority rule.
+- Replaced whole-share floor sizing and cash-shortfall priority trimming with a portfolio-wide
+  PuLP/native-HiGHS optimization that minimizes total absolute dollar drift. The initial model
+  selects the single sell wave; after actual sells, a buy-only model selects the single buy wave.
+  Fractional-broker planning is unchanged.
+- Added strictly validated `trading.optimization_timeout_seconds` (default `10.0`, range
+  `0.1`–`60.0`) and fail-closed optimization error reporting.
 - Fixed concurrent IBKR account runs failing with warning 2101 by replacing the legacy
   single-account update subscription with one targeted multi-account subscription per connection.
 

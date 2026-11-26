@@ -2,14 +2,16 @@
 
 This is a standalone description of the rebalancing logic for the Zehnlabs
 Rebalancer (system version 3.0.0). It covers the pure planning rules, the
-account run, and the retry rules. The authoritative specification is the PRD
-(`docs/refactor-prd.md`, §7, §8.1, §10.5); this document is a plain-language
-summary of that behaviour with no history.
+account run, and the retry rules. It describes current behavior; ADR 0010
+records the whole-share optimizer decision. Historical refactor documents
+describe the earlier 3.0.0 implementation and are not current planner rules.
 
-All quantities are whole shares for a whole-share broker (IBKR is one), or
-multiples of `0.000001` for a fractional broker. Prices are `float`. Everywhere
-a tolerance is needed an epsilon of `1e-9` is used. Share quantities are always
-rounded **down** to the broker's granularity — never up.
+IBKR is a whole-share broker. Its planner uses PuLP 4.3.1 with the in-process
+HiGHS adapter and highspy 1.16.0 to choose the closest broker-reachable portfolio.
+Existing fractional residues are immutable; orders change only whole shares.
+A fractional-capable broker instead uses the unchanged six-decimal, round-down
+planner and never invokes the solver. The whole-share model represents money as
+integer $0.0001 ticks.
 
 ## 1. Targets and replacements
 
@@ -30,7 +32,8 @@ rounded **down** to the broker's granularity — never up.
   exist and ask ≥ bid; else last; else close; else bar close.
 - **Buy reference** (sizes buys and the limit): ask; else last; else close;
   else bar close.
-- **Sell reference** (preview estimates): bid; else last; else close; else bar.
+- **Sell reference** (initial cash feasibility and preview proceeds): bid; else
+  last; else close; else bar.
 - **Limit price** = buy reference × (1 + `buy_slippage_percent` / 100), rounded
   half-up to 2 decimals when ≥ 1.00, else to 4 decimals.
 - If a needed price is missing, the run fails with a pricing error.
@@ -52,11 +55,13 @@ For each account, one run (`rebalance_account`) performs these steps:
 8. Read the account state (cash, NetLiquidation, positions). Missing cash or
    NetLiquidation is an error — never treated as zero.
 9. Fetch quotes and compute marks.
-10. Compute `V0`, fix the dollar reserve from it, and compute the reserve-aware
-    sell plan. Cross-check `V0` (our computed value) against IBKR's
+10. Compute `V0`, fix the dollar reserve from it, and optimize the initial
+    portfolio. Only its sell orders become the sell plan. Cross-check `V0`
+    (our computed value) against IBKR's
     NetLiquidation; a mismatch over 2% fails a live run (preview warns).
-11. Log the plan. **Preview**: simulate the sells,
-    run the buy plan, and return a preview. Stop here.
+11. Log the sell plan. **Preview**: simulate those sells at their sell
+    references, run the buy-only optimizer from the simulated snapshot, and
+    return the final sell and buy plans. Stop here without placing orders.
 12. If there are sells, check the market is open, place all sells (market), and
     wait for them.
 13. If any sell filled, poll the reported cash until it reflects the proceeds
@@ -65,53 +70,81 @@ For each account, one run (`rebalance_account`) performs these steps:
 14. Compute `positions_after` as `state0` positions **minus the filled sell
     quantities** (never re-read from the broker).
 15. Fetch fresh quotes for the buy leg.
-16. Compute the buy plan (below) and log it.
+16. Run the buy-only optimizer from actual conservative cash, remaining
+    positions, fresh quotes, and the original reserve; log the final buy plan.
 17. If there are buys, check the market is open, place all buys (limit), and
     wait for them.
 18. Return success with the executed orders, end estimates, and the run record.
 
 The run never raises: every failure becomes a failed result describing what
-already happened (which orders filled). On failure the run does **not** cancel
-its own orders — the next run cancels them. The connection is always closed.
+already happened (which orders filled). A planning failure is
+`OPTIMIZATION_FAILED`; a missing model price remains `PRICING_FAILED`. A live
+buy optimization can fail after sells completed, in which case those sell
+executions remain in the result and no buys are placed. On failure the run does
+**not** cancel its own orders — the next run cancels them. The connection is
+always closed.
 
 ### Selling
 
-The fixed reserve is `minimum_cash_reserve_percent / 100 × V0`. Strategy capital
-for sells is `sell_target_base = max(0, V0 − reserve)`, so a target symbol's
-desired value is `weight × sell_target_base`. For each position not in the
-targets, sell all quantity supported by the broker (an IBKR fractional leftover
-is reported as a note to be sold manually). For a target position, sell the
-broker-granular quantity above its desired value. A sell never exceeds the held
-quantity. This can sell part of an otherwise proportioned fully invested account
-to establish the reserve.
+The fixed reserve is `minimum_cash_reserve_percent / 100 × V0`. Initial strategy
+capital is `max(0, V0 − reserve)`, and each target dollar value is its weight
+times that capital. The whole-share model considers all target and held symbols
+together. It chooses final whole shares, buys, and sells so projected cash—cash
+plus sells at sell references minus provisional buys at buy limits—stays at or
+above the reserve.
+
+The initial model may sell a target that looks acceptable in isolation when the
+resulting cash permits a closer portfolio elsewhere. A held non-target is driven
+to zero broker-tradable shares, leaving only an immutable fractional residue.
+Only the model's sell orders are returned and submitted; its provisional buys
+exist solely to make the global sell decision cash-aware.
 
 ### Buying
 
 - Reuse the dollar `reserve` computed from `V0`; never recompute it from `V1`.
-  `buy_target_base = max(0, V1 − reserve)` and `budget = cash_base − reserve`.
-- For each target in symbol order: `gap` = weight × `buy_target_base − held_value`. If `gap`
-  is at least one broker-sized unit, plan a buy of
-  `round_quantity(gap / buy_reference)` shares at the limit price.
-- If `budget ≤ 0`, no buys are placed (a warning is added).
-- Total cost is the sum of `quantity × limit` per buy. If the raw plan already
-  fits within `budget + eps`, leave it unchanged. Otherwise use target weight
-  ascending, then symbol descending for equal weights, for both passes:
-  1. Remove a candidate completely if the plan without it is still over budget;
-     otherwise retain the maximum broker-granular quantity that makes the plan
-     fit, then stop the removal pass.
-  2. Visit candidates once in the same order and restore the maximum removed
-     quantity that fits. If the next unit is too expensive, continue because a
-     later candidate may be cheaper. Never restore above the raw quantity.
-  Both passes use bulk arithmetic rather than looping once per broker unit.
-- Emit funded orders in normal symbol order. Derive the warning and the run
-  record's trimmed-symbol list from raw versus final quantities; fractional
-  reductions show up to six decimals.
-- Recompute the final limit-price cost and fail closed if it exceeds
-  `budget + eps`, a quantity leaves `[0, raw]`, granularity is invalid, or any
-  still-trimmed candidate can afford another broker unit from the remainder.
-- The result is maximal under this target-weight priority: for every underfunded
-  raw buy, the final remainder cannot buy one more broker-sized unit. It is not
-  a global portfolio optimizer.
+  Post-sell strategy capital is `max(0, V1 − reserve)`, where `V1` uses
+  conservative `cash_base`, remaining holdings, and fresh marks.
+- Sells are prohibited. Buy cost at limit prices must not exceed
+  `max(0, cash_base − reserve)`. If cash is at or below reserve, return no buys
+  with the existing warning and no trimmed symbols.
+- For every symbol, measure drift with the mark—not the limit or sell reference—
+  and choose the broker-reachable final quantity. Tight bounds stop at the first
+  whole-share lattice point at or above the target after any immutable residue.
+- Emit buy orders in symbol order. A symbol is `trimmed` only when its optimized
+  final quantity is below the independently closest buy-only quantity it could
+  reach without the global cash constraint. Warnings name every and only those
+  final trimmed symbols.
+
+### Whole-share objective and solver policy
+
+For each symbol, `final_whole = held_whole + buy − sell`; buys, sells, and final
+shares are nonnegative integers, sells cannot exceed held whole shares, and a
+binary direction constraint prevents buying and selling the same symbol. Two
+linear inequalities make each error variable the absolute difference between
+marked final value and target dollars. Final-share and trade bounds come from
+holdings and the first useful lattice point, not an arbitrary big-M.
+
+The optimizer uses sequential lexicographic solves:
+
+1. Minimize total absolute dollar drift across all modeled symbols.
+2. With that optimum fixed, minimize each symbol's drift by target weight
+   descending, then symbol ascending. Held non-targets have weight zero.
+3. With all drift optima fixed, minimize each final share quantity in the same
+   order. This chooses the lower quantity for an exact half-share tie.
+
+Priority never permits greater total drift. Every stage must return PuLP
+`Optimal`, a solution, and native HiGHS `kOptimal`. The time limit for each
+stage is `trading.optimization_timeout_seconds` (default `10.0`, valid
+`0.1`–`60.0`). Time, node, gap, numerical, memory, interrupt, and other limits
+are failures even if HiGHS has an incumbent. Direct postconditions recheck
+integrality, holdings, direction, cash, and safe numeric bounds before orders
+are created.
+
+### Fractional-capable brokers
+
+When `supports_fractional=True`, `plan_sells` and `plan_buys` keep the existing
+six-decimal round-down, affordability, warning, and deterministic priority
+behavior. PuLP and HiGHS are not invoked for this branch.
 
 ## 4. Retry rules
 
@@ -136,10 +169,10 @@ to establish the reserve.
 
 - A sell never exceeds the held quantity; a position never goes negative.
 - Every emitted share quantity is > 0 and respects broker granularity.
-- Every final buy quantity is no greater than its raw desired quantity.
-- Final limit-price cost is at most `budget + 1e-9`; buys never spend the
-  configured reserve.
-- No underfunded raw buy can take one more broker-sized unit from the final
-  remainder.
+- A whole-share symbol is never both bought and sold in one model.
+- Initial projected cash stays at or above the fixed reserve; post-sell buy
+  cost does not exceed `max(0, cash_base − reserve)`.
+- Whole-share price, cash, quantity-product, and objective bounds stay within
+  the exact integer-money safety limit before solving.
 - The buy plan contains no sells and the sell plan no buys.
 - Identical inputs give an identical plan (deterministic symbol order).

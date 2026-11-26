@@ -45,13 +45,15 @@ To ensure cash from sales is available for purchases, the rebalancing process oc
 
 ### How a Rebalance Works
 
-For each enabled account, one run moves the portfolio toward its strategy's target weights, using whole shares only:
+For each enabled account, one run moves the portfolio toward its strategy's target weights:
 
 1. Targets are fetched from the allocations API, validated, and scaled to sum to exactly 100%, then replacements are applied if the account uses one ([Replacement Sets](#replacement-sets)). An empty target list means "sell everything".
-2. Shares are always rounded **down** to whole numbers. A target worth less than one share is simply not bought — there is no minimum purchase of one share.
-3. Sells are placed first (as **market** orders); once they fill, the updated cash is read and buys (as **limit** orders, sized from the ask plus a small slippage buffer) are placed.
-4. A **cash reserve** is fixed once from the start-of-run account value (default 0.25%) and kept outside the strategy. Sell targets use start value minus the reserve; buy targets use post-sell value minus the same dollar reserve. If raw buys exceed the cash budget, lower-weight quantities are removed first and then added back once in the same priority order as cash permits.
+2. For IBKR whole-share accounts, a portfolio-wide optimizer selects the broker-reachable holdings with the least total absolute dollar drift from all targets. It may sell one symbol to fund a closer portfolio elsewhere; exact ties prefer higher target weight, then symbol, then the lower share quantity.
+3. The initial optimization determines one **market sell** wave. Its provisional buys are discarded. After those sells fill, the app reads conservative actual cash, fetches fresh quotes, and runs a buy-only optimization for the one **limit buy** wave. Preview uses the same sequence with simulated sell proceeds and places no orders.
+4. A **cash reserve** is fixed once from the start-of-run account value (default 0.25%) and kept outside the strategy. The initial and post-sell optimizations use the same dollar reserve and conservative sell references or buy limits in their cash constraints.
 5. At the start of each live run the app cancels any of *its own* working orders. If it finds *foreign* working orders (placed manually in TWS or the mobile app), the run stops and warns instead of trading.
+
+Fractional-capable brokers keep the existing six-decimal, round-down planner and do not invoke the whole-share optimizer.
 
 ---
 
@@ -147,6 +149,7 @@ accounts:
 -   Advanced users can optimize these settings as needed
 -   The file contains inline documentation for all parameters
 -   `trading.minimum_cash_reserve_percent` (default `0.25`) is the fixed cash allocation outside the strategy, calculated from the account's start-of-run value. Setting it below 0.25% may not cover commissions on large purchases of low-priced shares.
+-   `trading.optimization_timeout_seconds` (default `10.0`, range `0.1`–`60.0`) is the limit for each whole-share optimizer solve stage. A timeout fails the run; an unproven incumbent is never traded.
 
 Both files require a service restart after changes: `docker compose restart`
 

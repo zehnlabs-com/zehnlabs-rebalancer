@@ -1,5 +1,7 @@
 # The cash reserve is outside strategy capital
 
+ADR 0010 supersedes the raw-buy floor-sizing implementation described below. The fixed-dollar reserve and target-base decision remain in force.
+
 The configured reserve is a real cash allocation, not part of the capital divided
 among strategy targets. At the start of each run:
 

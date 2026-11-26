@@ -32,6 +32,9 @@ COPY event-broker/requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Fail the build if local and runtime dependencies are inconsistent.
+RUN pip check
+
 # Copy application code
 COPY event-broker/app/ ./app/
 

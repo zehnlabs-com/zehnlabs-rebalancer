@@ -13,6 +13,8 @@ setup(
     install_requires=[
         "pydantic==2.11.7",
         "broker-connector-base==1.0.0",
+        "pulp==4.3.1",
+        "highspy==1.16.0",
     ],
-    python_requires=">=3.11",
+    python_requires=">=3.12",
 )

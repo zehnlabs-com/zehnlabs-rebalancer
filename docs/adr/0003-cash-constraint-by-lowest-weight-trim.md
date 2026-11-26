@@ -1,5 +1,7 @@
 # Cash shortfalls use removal and add-back priority
 
+**Superseded by ADR 0010.** This records the former whole-share cash-shortfall rule; the fractional planner remains unchanged.
+
 When raw buy quantities cost more than `cash_base - reserve` at their limit prices,
 the planner starts with the complete raw plan and uses one priority order for two
 passes: target weight ascending, then symbol descending for equal weights.

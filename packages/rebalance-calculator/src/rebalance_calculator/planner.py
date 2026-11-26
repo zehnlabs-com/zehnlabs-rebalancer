@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
+from decimal import ROUND_FLOOR, Decimal
 from typing import Dict, Final, Mapping, Optional, Sequence
 
 from broker_connector_base import Position, Quote, Side
 
 from .models import BuyPlan, Note, PlannedOrder, SellPlan
+from .optimizer import _optimize_whole_shares
+from .pricing import limit_price
 
 EPS = 1e-9
 FRACTIONAL_QUANTITY_UNIT: Final[float] = 0.000001
@@ -37,20 +39,6 @@ def round_quantity(x: float, supports_fractional: bool) -> float:
     return math.floor(x * scale + EPS) / scale
 
 
-def limit_price(reference: float, slippage_pct: float) -> float:
-    """Buy limit price = reference * (1 + slippage_pct/100), rounded half-up.
-
-    PRC-4: 2 decimals if the reference is >= 1.00, else 4 decimals, using
-    Decimal with ROUND_HALF_UP.
-    """
-    raw = reference * (1.0 + slippage_pct / 100.0)
-    if reference >= 1.00:
-        quantum = Decimal("0.01")
-    else:
-        quantum = Decimal("0.0001")
-    return float(Decimal(str(raw)).quantize(quantum, rounding=ROUND_HALF_UP))
-
-
 def _marks_held(positions: Sequence[Position], quotes: Mapping[str, Quote]) -> Dict[str, float]:
     """mark price for every symbol currently held."""
     marks: Dict[str, float] = {}
@@ -67,8 +55,16 @@ def _held_quantities(positions: Sequence[Position]) -> Dict[str, float]:
     return held
 
 
+def _fractional_residue_note(symbol: str, quantity: float) -> Note:
+    return Note(
+        "warning",
+        f"{symbol}: {quantity:.4f} shares can't be sold through the API "
+        f"(fractional). Sell them manually in TWS or the IBKR app.",
+    )
+
+
 def _priority_order(candidates: Sequence[_BuyCandidate]) -> list[_BuyCandidate]:
-    """Lowest target weight first; equal weights use descending symbol order."""
+    """Fractional-path priority: lowest weight, then descending symbol."""
     by_descending_symbol = sorted(candidates, key=lambda row: row.symbol, reverse=True)
     return sorted(by_descending_symbol, key=lambda row: row.weight)
 
@@ -105,7 +101,7 @@ def _affordable_units(available: float, price: float, scale: int) -> int:
 def _fit_buys(
     candidates: Sequence[_BuyCandidate], budget: float, supports_fractional: bool
 ) -> None:
-    """Fit raw buys with the required removal and add-back passes in bulk."""
+    """Preserve the fractional path's deterministic affordability behavior."""
     scale = _broker_scale(supports_fractional)
     priority = _priority_order(candidates)
     cost = sum(row.quantity * row.limit_price for row in candidates)
@@ -151,18 +147,44 @@ def _fit_buys(
 def plan_sells(
     positions: Sequence[Position],
     targets: Mapping[str, float],
-    marks: Mapping[str, float],
+    quotes: Mapping[str, Quote],
     cash: float,
     reserve: float,
+    slippage_pct: float,
     supports_fractional: bool,
+    optimization_timeout_seconds: float,
 ) -> SellPlan:
-    """Build sells against strategy capital `max(0, V0 - reserve)`.
+    """Build the one sell wave against `max(0, V0 - reserve)`.
 
     `reserve` is the fixed dollar reserve calculated by the caller from V0.
-    Marks are the caller-computed mark prices.
     """
+    marks = _marks_held(positions, quotes)
+    total_value = cash + sum(p.quantity * marks[p.symbol] for p in positions)
+
+    if not supports_fractional:
+        optimized = _optimize_whole_shares(
+            positions=positions,
+            targets=targets,
+            quotes=quotes,
+            cash=cash,
+            reserve=reserve,
+            slippage_pct=slippage_pct,
+            buy_only=False,
+            optimization_timeout_seconds=optimization_timeout_seconds,
+        )
+        orders = tuple(
+            PlannedOrder(row.symbol, Side.SELL, float(row.sell), None)
+            for row in optimized.symbols
+            if row.sell > 0
+        )
+        notes = tuple(
+            _fractional_residue_note(row.symbol, row.final_quantity)
+            for row in optimized.symbols
+            if targets.get(row.symbol, 0.0) == 0 and row.final_quantity > EPS
+        )
+        return SellPlan(total_value=total_value, orders=orders, notes=notes)
+
     ordered = sorted(positions, key=lambda p: p.symbol)
-    total_value = cash + sum(p.quantity * marks[p.symbol] for p in ordered)
     target_base = max(0.0, total_value - reserve)
     orders: list[PlannedOrder] = []
     notes: list[Note] = []
@@ -174,11 +196,7 @@ def plan_sells(
             qty = round_quantity(p.quantity, supports_fractional)
             leftover = p.quantity - qty
             if leftover > EPS:
-                notes.append(Note(
-                    "warning",
-                    f"{symbol}: {leftover:.4f} shares can't be sold through the API "
-                    f"(fractional). Sell them manually in TWS or the IBKR app.",
-                ))
+                notes.append(_fractional_residue_note(symbol, leftover))
         else:  # a target that is over its weight
             excess_value = p.quantity * marks[symbol] - w * target_base
             if excess_value <= 0:
@@ -198,6 +216,28 @@ def plan_sells(
     )
 
 
+def _cash_at_or_below_reserve_plan(
+    total_value: float,
+    cash_base: float,
+    reserve: float,
+    budget: float,
+    prior_notes: tuple[Note, ...] = (),
+) -> BuyPlan:
+    warning = Note(
+        "warning",
+        f"Cash ${cash_base:,.2f} is at or below the minimum reserve "
+        f"${reserve:,.2f}; no buys placed.",
+    )
+    return BuyPlan(
+        total_value=total_value,
+        orders=(),
+        notes=(*prior_notes, warning),
+        cash_base=cash_base,
+        reserve=reserve,
+        budget=budget,
+    )
+
+
 def plan_buys(
     positions_after: Sequence[Position],
     targets: Mapping[str, float],
@@ -206,17 +246,89 @@ def plan_buys(
     reserve: float,
     slippage_pct: float,
     supports_fractional: bool,
+    optimization_timeout_seconds: float,
 ) -> BuyPlan:
     """Build buys against strategy capital `max(0, V1 - reserve)`.
 
-    Raw quantities size at the buy reference. If their limit-price cost exceeds
-    `budget = cash_base - reserve`, the two-pass fitter removes and then adds
-    back quantities in ascending-weight, descending-symbol priority order.
+    Whole-share accounts use the portfolio optimizer. Fractional accounts keep
+    the existing six-decimal sizing and deterministic affordability behavior.
     """
     marks = _marks_held(positions_after, quotes)
     held = _held_quantities(positions_after)
     total_value_1 = cash_base + sum(p.quantity * marks[p.symbol] for p in positions_after)
     target_base = max(0.0, total_value_1 - reserve)
+    budget = cash_base - reserve
+
+    if not supports_fractional:
+        optimized = _optimize_whole_shares(
+            positions=positions_after,
+            targets=targets,
+            quotes=quotes,
+            cash=cash_base,
+            reserve=reserve,
+            slippage_pct=slippage_pct,
+            buy_only=True,
+            optimization_timeout_seconds=optimization_timeout_seconds,
+        )
+        if budget <= 0:
+            return _cash_at_or_below_reserve_plan(
+                total_value_1, cash_base, reserve, budget
+            )
+        orders = tuple(
+            PlannedOrder(
+                row.symbol,
+                Side.BUY,
+                float(row.buy),
+                limit_price(quotes[row.symbol].buy_reference()[0], slippage_pct),
+            )
+            for row in optimized.symbols
+            if row.buy > 0
+        )
+        trimmed = tuple(
+            row
+            for row in optimized.symbols
+            if targets.get(row.symbol, 0.0) > 0
+            and row.final_whole < row.baseline_final_whole
+        )
+        notes: list[Note] = []
+        for row in optimized.symbols:
+            if (
+                targets.get(row.symbol, 0.0) > 0
+                and held.get(row.symbol, 0.0) == 0
+                and row.buy == 0
+            ):
+                reference = quotes[row.symbol].buy_reference()[0]
+                desired_value = targets[row.symbol] * target_base
+                if 0 < desired_value < reference:
+                    notes.append(Note(
+                        "info",
+                        f"{row.symbol}: target ${desired_value:,.2f} would buy less than "
+                        f"one share at ${reference:,.2f}; not bought.",
+                    ))
+        if trimmed:
+            parts: list[str] = []
+            for row in trimmed:
+                difference = row.baseline_final_whole - row.final_whole
+                if row.final_whole == 0:
+                    parts.append(
+                        f"{row.symbol} skipped ({targets[row.symbol] * 100:.1f}% target)"
+                    )
+                else:
+                    plural = "share" if difference == 1 else "shares"
+                    parts.append(f"{row.symbol} reduced by {difference} {plural}")
+            notes.append(Note(
+                "warning",
+                "Not enough cash for all buys: " + "; ".join(parts) + ".",
+            ))
+        return BuyPlan(
+            total_value=total_value_1,
+            orders=orders,
+            notes=tuple(notes),
+            trimmed_symbols=tuple(row.symbol for row in trimmed),
+            cash_base=cash_base,
+            reserve=reserve,
+            budget=budget,
+        )
 
     raw_buys: list[_BuyCandidate] = []
     notes: list[Note] = []
@@ -247,17 +359,10 @@ def plan_buys(
         if qty > 0:
             raw_buys.append(_BuyCandidate(symbol, w, qty, qty, limit))
 
-    budget = cash_base - reserve
     if budget <= 0:
         # CASH-3: no buys placed; return with just this warning note.
-        notes.append(Note(
-            "warning",
-            f"Cash ${cash_base:,.2f} is at or below the minimum reserve "
-            f"${reserve:,.2f}; no buys placed.",
-        ))
-        return BuyPlan(
-            total_value=total_value_1, orders=(), notes=tuple(notes),
-            cash_base=cash_base, reserve=reserve, budget=budget,
+        return _cash_at_or_below_reserve_plan(
+            total_value_1, cash_base, reserve, budget, tuple(notes)
         )
 
     raw_cost = sum(row.quantity * row.limit_price for row in raw_buys)

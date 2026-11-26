@@ -29,6 +29,7 @@ from rebalance_calculator import (
     BuyPlan,
     InvalidTargetsError,
     Note,
+    OptimizationError,
     PlannedOrder,
     RawAllocation,
     SellPlan,
@@ -299,6 +300,7 @@ async def rebalance_account(
         # ---- 5-18. inside the connection ----------------------------------- #
         cfg = deps.app_config
         slippage = cfg.trading.buy_slippage_percent
+        optimization_timeout = cfg.trading.optimization_timeout_seconds
         conn = deps.connection_factory(account)
         async with conn:
                 # ---- 6. cancel own orders (live only) ---------------------- #
@@ -367,9 +369,14 @@ async def rebalance_account(
                 )
                 reserve = (cfg.trading.minimum_cash_reserve_percent / 100.0) * V0
                 sell_plan = plan_sells(
-                    state0.positions, final_targets, marks, state0.cash,
+                    state0.positions,
+                    final_targets,
+                    q0,
+                    state0.cash,
                     reserve,
+                    slippage,
                     conn.supports_fractional,
+                    optimization_timeout,
                 )
                 for n in sell_plan.notes:
                     notes.append(_note(n.level, n.text))
@@ -422,8 +429,14 @@ async def rebalance_account(
                          for o in sell_plan.orders],
                     )
                     buy_plan = plan_buys(
-                        pos_after, final_targets, q0, cash_after, reserve,
-                        slippage, conn.supports_fractional,
+                        pos_after,
+                        final_targets,
+                        q0,
+                        cash_after,
+                        reserve,
+                        slippage,
+                        conn.supports_fractional,
+                        optimization_timeout,
                     )
                     for n in buy_plan.notes:
                         notes.append(_note(n.level, n.text))
@@ -518,8 +531,14 @@ async def rebalance_account(
 
                 # ---- 16. buy plan --------------------------------------------- #
                 buy_plan = plan_buys(
-                    positions_after, final_targets, q1, cash_base, reserve,
-                    slippage, conn.supports_fractional,
+                    positions_after,
+                    final_targets,
+                    q1,
+                    cash_base,
+                    reserve,
+                    slippage,
+                    conn.supports_fractional,
+                    optimization_timeout,
                 )
                 for n in buy_plan.notes:
                     notes.append(_note(n.level, n.text))
@@ -593,6 +612,10 @@ async def rebalance_account(
                               value_end=buy_plan.total_value, cash_end=cash_end)
     except ConnectionFailedError as exc:
         return await fail(FailureReason.CONNECTION_FAILED, str(exc))
+    except NoPriceError as exc:
+        return await fail(FailureReason.PRICING_FAILED, str(exc))
+    except OptimizationError as exc:
+        return await fail(FailureReason.OPTIMIZATION_FAILED, str(exc))
     except _RunFailed as rf:
         return await fail(rf.reason, rf.message)
     except BaseException as exc:  # noqa: BLE001 - unexpected -> INTERNAL_ERROR

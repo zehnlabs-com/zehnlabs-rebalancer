@@ -43,6 +43,7 @@ _KNOWN_TREE: dict[str, dict] = {
     },
     "trading": {
         "minimum_cash_reserve_percent": False, "buy_slippage_percent": False,
+        "optimization_timeout_seconds": False,
         "order_timeout_seconds": False, "order_status_check_interval_seconds": False,
         "cancel_confirm_timeout_seconds": False, "cash_update_timeout_seconds": False,
     },

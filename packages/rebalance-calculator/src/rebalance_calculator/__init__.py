@@ -9,6 +9,7 @@ from .planner import (
     plan_buys,
 )
 from .models import Note, PlannedOrder, RawAllocation, Targets, SellPlan, BuyPlan
+from .optimizer import OptimizationError
 
 __version__ = "1.0.0"
 
@@ -30,5 +31,6 @@ __all__ = [
     "Targets",
     "SellPlan",
     "BuyPlan",
+    "OptimizationError",
     "__version__",
 ]

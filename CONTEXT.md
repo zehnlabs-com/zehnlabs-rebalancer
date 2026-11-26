@@ -88,7 +88,7 @@ An order that is not yet filled, cancelled or rejected.
 _Avoid_: open order (reserved for the IBKR API term)
 
 **Whole-share broker**:
-A broker whose `supports_fractional` is false. IBKR is one; share quantities are whole numbers, rounded down.
+A broker whose `supports_fractional` is false. IBKR is one; a portfolio-wide optimizer selects broker-reachable whole-share quantities while preserving any existing fractional residue.
 _Avoid_: integer broker
 
 **Replacement set**:

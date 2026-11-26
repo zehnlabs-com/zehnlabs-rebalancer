@@ -27,7 +27,8 @@ The system uses modular Python packages for broker-agnostic design:
 3. **rebalance-calculator** (v1.0.0) - Broker-agnostic calculation engine (pure functions; no I/O, no clock, no logging)
    - `validate_and_scale`: validate and scale raw API weights to sum to 1.0 (or empty list = sell everything)
    - `apply_replacements`: apply a built-in replacement set (REP)
-   - `plan_sells` / `plan_buys`: reserve-aware, broker-granularity plans (§7); sells market, buys limit, and constrained buys use the exact two-pass priority rule
+   - `plan_sells` / `plan_buys`: reserve-aware broker-granularity plans; whole-share accounts use portfolio-wide PuLP 4.3.1/native HiGHS 1.16.0 optimization, while fractional accounts retain the six-decimal planner
+   - `optimizer.py`: integer-$0.0001 model minimizing total absolute dollar drift, with deterministic exact-tie stages and fail-closed solver/result checks
 
 4. **ibkr-connector** (v1.0.0) - IBKR-specific implementation
    - `IBKRConnection`: Implements `BrokerConnection` against the IBKR Gateway API
@@ -198,6 +199,7 @@ ibkr:
 trading:
   minimum_cash_reserve_percent: 0.25   # 0-5. cash floor as % of total value
   buy_slippage_percent: 0.5            # 0-5. limit = buy ref * (1 + this/100)
+  optimization_timeout_seconds: 10.0   # 0.1-60. per lexicographic solve stage
   order_timeout_seconds: 300           # per leg
   order_status_check_interval_seconds: 2.0
   cancel_confirm_timeout_seconds: 30
@@ -280,13 +282,16 @@ The subscriber fetches the shared read-only Ably key once at startup and passes 
 The rebalancer uses a two-phase approach to handle cash constraints:
 
 1. **Sell Phase**:
-   - Compute the sell plan from target weights and marks (`plan_sells`)
+   - For a whole-share account, optimize the entire initial portfolio using marks, sell references, buy limits, and the fixed reserve
+   - Return only the optimizer's sell orders; its provisional buys are never submitted
    - Place all sells as **market** orders (symbol order) and wait for them
 
 2. **Buy Phase**:
    - Read the updated cash (lower of reported cash vs. `state0.cash + fills`)
-   - Recompute the buy plan with fresh quotes (`plan_buys`), sized at the ask + slippage buffer
+   - Fetch fresh quotes and run a buy-only optimization from the actual post-sell holdings and cash
    - Place buys as **limit** orders and wait for them
+
+Preview follows the same shape using simulated sell-reference proceeds and places no orders. Fractional-capable brokers retain the existing non-solver planner.
 
 ### Order Execution
 - **Order Types**: MARKET orders for sells, LIMIT orders for buys; all orders are **DAY**
@@ -301,7 +306,8 @@ Each IBKR connection requires a unique `client_id` to prevent collisions. It is 
 
 ### Cash Reserve & Retries
 - The reserve is fixed once as `trading.minimum_cash_reserve_percent` (default 0.25%) of start-of-run value `V0` and sits outside strategy capital. Sell targets use `V0 - reserve`; buy targets use `V1 - reserve` with the same dollar reserve.
-- If raw buys exceed `cash_base - reserve`, quantities are removed by target weight ascending (equal weights: symbol descending), then added back once in that same order as budget permits. Orders are still emitted in normal symbol order.
+- For whole-share accounts, each model minimizes portfolio-wide total absolute dollar drift subject to the reserve and conservative cash prices. Exact total-drift ties minimize per-symbol drift by target weight descending then symbol ascending, followed by final quantities in the same order; orders are still emitted in symbol order.
+- `trading.optimization_timeout_seconds` limits every lexicographic solver stage. Only PuLP `Optimal` with a solution and native HiGHS `kOptimal` is accepted; any other status reports `OPTIMIZATION_FAILED`.
 - A live run that fails, or that starts while the market is closed, is queued and retried **once** at the next market open (09:35 ET). A scheduled run that fails is not retried. There is no PDT protection.
 
 ## Manual Event System
