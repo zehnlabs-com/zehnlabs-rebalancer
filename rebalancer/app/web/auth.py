@@ -17,6 +17,7 @@ from ..state.models import WebSession, parse_utc, utc_now_text
 from ..state.sqlite import SQLiteState
 
 COOKIE_NAME = "__Host-rebalancer-session"
+LOOPBACK_COOKIE_NAME = "rebalancer-session"
 IDLE_MINUTES = 30
 ABSOLUTE_HOURS = 12
 
@@ -69,7 +70,7 @@ class AuthenticationService:
     ) -> Optional[SessionContext]:
         now = datetime.now(timezone.utc)
         self.state.prune_sessions(now, IDLE_MINUTES)
-        raw = request.cookies.get(COOKIE_NAME, "")
+        raw = request.cookies.get(self.cookie_name(request), "")
         stored = self.state.get_session(self._hash(raw)) if raw else None
         if stored is None:
             if not ensure:
@@ -174,12 +175,7 @@ class AuthenticationService:
         return self._hash(identity)
 
     def same_origin(self, request: Request) -> bool:
-        scheme = request.url.scheme
-        if (
-            self.settings.railway_environment_id
-            and request.headers.get("x-forwarded-proto") == "https"
-        ):
-            scheme = "https"
+        scheme = "https" if self.secure_request(request) else request.url.scheme
         expected = f"{scheme}://{request.url.netloc}"
         origin = request.headers.get("origin")
         if origin:
@@ -191,18 +187,40 @@ class AuthenticationService:
             return f"{parsed.scheme}://{parsed.netloc}" == expected
         return False
 
-    @staticmethod
-    def set_cookie(response: Response, context: SessionContext) -> None:
+    def secure_request(self, request: Request) -> bool:
+        if request.url.scheme == "https":
+            return True
+        return bool(
+            self.settings.railway_environment_id
+            and request.headers.get("x-forwarded-proto") == "https"
+        )
+
+    def cookie_name(self, request: Request) -> str:
+        return COOKIE_NAME if self.secure_request(request) else LOOPBACK_COOKIE_NAME
+
+    def set_cookie(
+        self,
+        response: Response,
+        context: SessionContext,
+        request: Request,
+    ) -> None:
         if context.set_cookie:
+            secure = self.secure_request(request)
             response.set_cookie(
-                COOKIE_NAME,
+                COOKIE_NAME if secure else LOOPBACK_COOKIE_NAME,
                 context.session_id,
-                secure=True,
+                secure=secure,
                 httponly=True,
                 samesite="lax",
                 path="/",
             )
 
-    @staticmethod
-    def clear_cookie(response: Response) -> None:
-        response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
+    def clear_cookie(self, response: Response, request: Request) -> None:
+        secure = self.secure_request(request)
+        response.delete_cookie(
+            COOKIE_NAME if secure else LOOPBACK_COOKIE_NAME,
+            path="/",
+            secure=secure,
+            httponly=True,
+            samesite="lax",
+        )

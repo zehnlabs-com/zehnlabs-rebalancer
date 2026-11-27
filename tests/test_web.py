@@ -18,7 +18,7 @@ from app.services.account_manager import (
 from app.settings import RuntimeSettings
 from app.state.sqlite import SQLiteState
 from app.web.app import create_web_app
-from app.web.auth import AuthenticationService, COOKIE_NAME
+from app.web.auth import AuthenticationService, COOKIE_NAME, LOOPBACK_COOKIE_NAME
 
 
 PASSWORD = "safe-dashboard-password-123"
@@ -135,6 +135,35 @@ class DashboardSecurityTests(unittest.TestCase):
         self.assertIn("Secure", cookie)
         self.assertIn("SameSite=lax", cookie)
         self.assertNotIn("Domain=", cookie)
+
+    def test_loopback_http_uses_host_cookie_and_can_log_in(self):
+        client = TestClient(
+            create_web_app(FakeApplication(self.state, self.settings), self.auth),
+            base_url="http://localhost",
+        )
+        self.addCleanup(client.close)
+        login = client.get("/login")
+        cookie = login.headers["set-cookie"]
+        self.assertIn(LOOPBACK_COOKIE_NAME, cookie)
+        self.assertNotIn(COOKIE_NAME, cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=lax", cookie)
+        self.assertNotIn("Secure", cookie)
+        self.assertNotIn("Domain=", cookie)
+
+        logged_in = client.post(
+            "/login",
+            data={
+                "username": "admin",
+                "password": PASSWORD,
+                "csrf_token": csrf(login),
+            },
+            headers={"Origin": "http://localhost"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(logged_in.status_code, 303)
+        self.assertIn(LOOPBACK_COOKIE_NAME, logged_in.headers["set-cookie"])
 
     def test_login_redirect_is_not_cacheable(self):
         response, token = self.login_form()

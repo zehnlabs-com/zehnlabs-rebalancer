@@ -98,7 +98,7 @@ def open_request(request):
 def session_cookie(response):
     parsed = http.cookies.SimpleCookie()
     parsed.load(response.headers["Set-Cookie"])
-    morsel = parsed["__Host-rebalancer-session"]
+    morsel = parsed["rebalancer-session"]
     return f"{morsel.key}={morsel.value}"
 
 

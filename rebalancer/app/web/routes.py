@@ -69,7 +69,7 @@ def build_router(
             },
             status_code=status_code,
         )
-        auth.set_cookie(response, session)
+        auth.set_cookie(response, session, request)
         return response
 
     def authenticated(request: Request) -> Optional[SessionContext]:
@@ -249,7 +249,7 @@ def build_router(
                 status_code=401,
             )
         response = RedirectResponse("/", status_code=303)
-        auth.set_cookie(response, logged_in)
+        auth.set_cookie(response, logged_in, request)
         return response
 
     @router.post("/logout")
@@ -259,7 +259,7 @@ def build_router(
             return forbidden()
         auth.logout(session)
         response = RedirectResponse("/login", status_code=303)
-        auth.clear_cookie(response)
+        auth.clear_cookie(response, request)
         return response
 
     @router.get("/", response_class=HTMLResponse)

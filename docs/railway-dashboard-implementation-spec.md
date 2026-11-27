@@ -390,7 +390,13 @@ A live-trading confirmation must name the Account, Strategy, Replacement Set, ac
 - Compare credentials with `secrets.compare_digest`, bound submitted username/password lengths, and return the same public error for an invalid username and invalid password.
 - Never store or log the password.
 - Use at least 32 random bytes for session IDs and CSRF tokens. Store only their SHA-256 hashes.
-- The cookie name is `__Host-rebalancer-session`. It contains only the opaque session ID and has `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, and no `Domain` attribute.
+- Over HTTPS, including Railway, the cookie name is
+  `__Host-rebalancer-session` and it has `Secure`, `HttpOnly`, `SameSite=Lax`,
+  `Path=/`, and no `Domain` attribute. The loopback-only Compose HTTP endpoint
+  uses `rebalancer-session` without `Secure`, because browsers otherwise reject
+  login before a VPS owner has added HTTPS; it retains `HttpOnly`,
+  `SameSite=Lax`, `Path=/`, and no `Domain`. Both cookies contain only the opaque
+  session ID. Never expose the HTTP endpoint on a non-loopback interface.
 - Sessions expire after 30 minutes idle or 12 hours absolute, whichever occurs first.
 - Rotate the session ID after login. Logout revokes it. Clear all sessions on process startup so a password change plus restart invalidates old sessions.
 - Before creating or reading a session, delete expired session rows. On startup and after a login attempt, delete login-failure rows whose window and block both ended more than 24 hours earlier.
@@ -561,7 +567,8 @@ Use FastAPI's in-process test client with fake discovery, clock, subscriber, exe
 - Wrong username and wrong password have the same status and public message.
 - Login rotates the session ID; logout, idle expiry, absolute expiry, and restart invalidation reject the old cookie.
 - Expired anonymous/authenticated sessions and stale login-failure rows are pruned according to section 10.1.
-- The session cookie has the required name and attributes and contains no credential or Account data.
+- HTTPS and loopback-HTTP session cookies have the required transport-specific
+  names and attributes and contain no credential or Account data.
 - Missing, invalid, cross-session, and cross-origin CSRF submissions make no state change.
 - The sixth failed login from one client receives `429`; throttling survives a database reopen, expires after 15 minutes, and a successful login clears it.
 - Railway-mode throttling uses only valid `X-Real-IP`; missing/invalid values share the fixed unknown identity, forged `X-Forwarded-For` values are ignored, and VPS mode uses only the socket peer.
