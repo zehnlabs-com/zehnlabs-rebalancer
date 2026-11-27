@@ -30,11 +30,25 @@ class DeploymentContractTests(unittest.TestCase):
         compose = yaml.safe_load((ROOT / "docker-compose.yaml").read_text(encoding="utf-8"))
         self.assertEqual(set(compose["services"]), {"rebalancer", "ibkr-gateway"})
         self.assertEqual(set(compose["volumes"]), {"rebalancer_state", "ib_settings"})
-        self.assertEqual(compose["services"]["ibkr-gateway"]["image"], GATEWAY)
+        gateway = compose["services"]["ibkr-gateway"]
+        self.assertEqual(gateway["image"], GATEWAY)
+        self.assertEqual(
+            gateway["pre_start"],
+            [
+                {
+                    "command": [
+                        "sh",
+                        "-c",
+                        "chown -R 1000:1000 /home/ibgateway/tws_settings",
+                    ],
+                    "user": "0:0",
+                }
+            ],
+        )
         self.assertEqual(
             compose["services"]["rebalancer"]["ports"], ["127.0.0.1:18778:18778"]
         )
-        for port in compose["services"]["ibkr-gateway"]["ports"]:
+        for port in gateway["ports"]:
             self.assertTrue(port.startswith("127.0.0.1:") or port.startswith("${VNC_BIND_ADDRESS:-127.0.0.1}:"))
         mounts = str(compose["services"]["rebalancer"]["volumes"])
         self.assertNotIn("config.yaml", mounts)

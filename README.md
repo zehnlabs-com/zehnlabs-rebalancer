@@ -11,7 +11,7 @@ Zehnlabs does not receive brokerage credentials or operate subscriber deployment
 
 ## Requirements
 
-- Docker Engine with Docker Compose
+- Docker Engine with Docker Compose 5.3.0 or newer
 - an IBKR Pro Account and the required market-data subscription
 - a Zehnlabs API key
 - a unique dashboard password of at least 16 characters
@@ -32,6 +32,11 @@ Railway requires Hobby or higher because this stack needs two persistent volumes
    docker compose up -d --build
    docker compose logs -f rebalancer
    ```
+
+   On a new `ib_settings` volume, Compose runs a one-time initialization step
+   from the pinned stock Gateway image to give UID 1000 ownership of its
+   settings directory. The long-running Gateway container still runs as the
+   stock image's unprivileged user.
 
 3. Open `http://localhost:18778`, log in as `admin`, and complete onboarding. The supplied Compose file binds the dashboard, Gateway API ports, and VNC to host loopback. It does not expose them on a public interface.
 

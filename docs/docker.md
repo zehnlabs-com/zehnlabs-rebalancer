@@ -2,6 +2,12 @@
 
 The Compose stack defines exactly `rebalancer` and `ibkr-gateway`, with named volumes `rebalancer_state` and `ib_settings`.
 
+Docker Compose 5.3.0 or newer is required. Before the stock Gateway container
+starts, its `pre_start` step gives the image's UID 1000 ownership of the mounted
+`ib_settings` directory. This is required for a fresh named volume. The step
+runs from the same pinned stock image; the long-running Gateway process remains
+the image's unprivileged user.
+
 ```bash
 docker compose up -d --build
 docker compose logs -f rebalancer

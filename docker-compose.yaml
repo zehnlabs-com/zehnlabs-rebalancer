@@ -11,6 +11,9 @@ networks:
 services:
   ibkr-gateway:
     image: gnzsnz/ib-gateway:10.51.1e@sha256:85975f493bcacc8341cb42e6946c460868d165e5f64d9924b1958c8f03e7bee4
+    pre_start:
+      - command: ["sh", "-c", "chown -R 1000:1000 /home/ibgateway/tws_settings"]
+        user: "0:0"
     ports:
       - "127.0.0.1:${IB_LIVE_API_PORT:-4001}:4003"
       - "127.0.0.1:${IB_PAPER_API_PORT:-4002}:4004"

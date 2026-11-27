@@ -444,6 +444,9 @@ Replace the heartbeat-file health check with an HTTP check of `http://127.0.0.1:
 The supplied Compose stack must:
 
 - define exactly `rebalancer` and `ibkr-gateway` services;
+- require Docker Compose 5.3.0 or newer and use a Gateway `pre_start` step from
+  the same pinned stock image, running as root only long enough to give UID 1000
+  ownership of the fresh `ib_settings` mount before the Gateway starts;
 - keep `ib_settings` mounted at the Gateway's current settings path;
 - add a named `rebalancer_state` volume mounted at `/app/state`;
 - remove the `config.yaml`, `accounts.yaml`, and `data` mounts;
@@ -579,6 +582,9 @@ Use FastAPI's in-process test client with fake discovery, clock, subscriber, exe
 - Restart it against the same volume and prove Account, Work Item, and Run persistence.
 - Start the image with a root-owned state volume, prove the entrypoint makes it writable, inspect the running Python and worker UIDs to prove they are non-root, and prove there is no required Node runtime.
 - `docker compose config` contains exactly the two required services and two named volumes, the loopback dashboard binding, and no removed file mounts.
+- A fresh `ib_settings` volume is initialized by the Gateway service's
+  `pre_start` step, after which the long-running stock Gateway process runs as
+  its image user and can persist settings.
 - Compose and the Railway manifest use the exact approved Gateway tag and digest.
 - Compose and Railway pass one identical `TRADING_MODE` value to both services; a Railway mode change is a staged deployment of both.
 - The production health check succeeds before onboarding and does not expose configuration.
