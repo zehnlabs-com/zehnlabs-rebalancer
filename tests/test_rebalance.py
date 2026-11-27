@@ -26,7 +26,7 @@ from rebalance_calculator import OptimizationError  # noqa: E402
 
 from app.accounts import AccountConfig  # noqa: E402
 from app.rebalance import rebalance_account as _rebalance_account, RunDeps  # noqa: E402
-from app.results import FailureReason, RunOutcome  # noqa: E402
+from app.results import INTERNAL_ERROR_MESSAGE, FailureReason, RunMode, RunOutcome, RunSource  # noqa: E402
 from app.services.notification_service import (  # noqa: E402
     NotificationContext,
     NotificationKind,
@@ -577,13 +577,30 @@ class InternalErrorTests(unittest.IsolatedAsyncioTestCase):
         conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
 
         async def boom(symbols):
-            raise ValueError("synthetic boom")
+            raise ValueError("synthetic-secret")
         conn.quotes = boom
-        result = await rebalance_account(ACCOUNT, "live", "signal", make_deps(conn, open_clock()))
+        with self.assertLogs("test_rebalance", level="ERROR") as captured:
+            result = await rebalance_account(
+                ACCOUNT, "live", "signal", make_deps(conn, open_clock())
+            )
         self.assertEqual(result.outcome, RunOutcome.FAILED)
         self.assertEqual(result.failure_reason, FailureReason.INTERNAL_ERROR)
-        self.assertTrue(result.error_message.startswith("Internal error: ValueError: synthetic boom"))
-        self.assertLessEqual(len(result.error_message), 300)
+        self.assertEqual(result.error_message, INTERNAL_ERROR_MESSAGE)
+        self.assertNotIn("synthetic-secret", result.model_dump_json())
+        self.assertNotIn("synthetic-secret", "\n".join(captured.output))
+
+    def test_worker_level_internal_error_is_safe(self):
+        from app.services.trading_executor import WorkerRunRequest, _internal_error_result
+
+        result = _internal_error_result(
+            WorkerRunRequest(ACCOUNT, "safe-error-run", RunMode.LIVE, RunSource.SIGNAL),
+            RunMode.LIVE,
+            RunSource.SIGNAL,
+            RuntimeError("synthetic-secret"),
+        )
+
+        self.assertEqual(result.error_message, INTERNAL_ERROR_MESSAGE)
+        self.assertNotIn("synthetic-secret", result.model_dump_json())
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ from .results import (
     AccountRunResult,
     ExecutedOrder,
     FailureReason,
+    INTERNAL_ERROR_MESSAGE,
     NoteOut,
     PriceEvidence,
     PlannedOrderOut,
@@ -619,9 +620,8 @@ async def rebalance_account(
         return await fail(rf.reason, rf.message)
     except BaseException as exc:  # noqa: BLE001 - unexpected -> INTERNAL_ERROR
         type_name = type(exc).__name__
-        message = f"Internal error: {type_name}: {exc}"[:300]
-        adapter.exception("internal error during run")
-        return await fail(FailureReason.INTERNAL_ERROR, message)
+        adapter.error("internal error during run (%s)", type_name)
+        return await fail(FailureReason.INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE)
 
 
 def _prices_record(q: dict, marks: dict[str, float]) -> dict[str, PriceEvidence]:

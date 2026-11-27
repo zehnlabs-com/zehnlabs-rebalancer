@@ -19,6 +19,7 @@ from app.results import (
     WorkAction,
 )
 from app.state.models import (
+    RunStatus,
     RunStart,
     WebSession,
     WorkItem,
@@ -599,13 +600,28 @@ class SQLiteStateTests(unittest.TestCase):
     def test_recovery_interrupts_running_and_does_not_return_it_due(self):
         item = self.work()
         self.state.create_work_item(item)
+        run_id = self.start().run_id
         self.state.start_work_batch(
-            [WorkRunStart(work_id=item.work_id, run=self.start())],
+            [WorkRunStart(work_id=item.work_id, run=self.start(run_id))],
             "2026-11-26T15:00:00.000000Z",
         )
         self.assertEqual(self.state.recover_interrupted(), (1, 1))
-        self.assertEqual(self.state.get_work_item(item.work_id).status, WorkStatus.INTERRUPTED)
+        recovered_work = self.state.get_work_item(item.work_id)
+        recovered_run = self.state.get_run(run_id)
+        self.assertEqual(recovered_work.status, WorkStatus.INTERRUPTED)
+        self.assertEqual(
+            recovered_work.message,
+            "Interrupted by process restart; not replayed.",
+        )
+        self.assertIsNotNone(recovered_work.finished_at)
+        self.assertEqual(recovered_work.run_id, run_id)
+        self.assertEqual(recovered_run.status, RunStatus.INTERRUPTED)
+        self.assertIsNone(recovered_run.outcome)
+        self.assertIsNone(recovered_run.result)
         self.assertEqual(self.state.due_pending_items("2099-01-01T00:00:00.000000Z"), [])
+        self.assertEqual(self.state.recover_interrupted(), (0, 0))
+        self.assertEqual(self.state.get_work_item(item.work_id), recovered_work)
+        self.assertEqual(self.state.get_run(run_id), recovered_run)
 
     def test_run_history_paginates_with_bounded_parameterized_queries(self):
         for index in range(55):

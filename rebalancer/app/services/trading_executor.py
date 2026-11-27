@@ -22,6 +22,7 @@ from ..rebalance import RunDeps, rebalance_account
 from ..results import (
     AccountRunResult,
     FailureReason,
+    INTERNAL_ERROR_MESSAGE,
     RunMode,
     RunOutcome,
     RunRecord,
@@ -86,12 +87,11 @@ def _internal_error_result(
     request: WorkerRunRequest,
     mode: RunMode,
     source: RunSource,
-    exc: BaseException,
+    _exc: BaseException,
 ) -> AccountRunResult:
     """A minimal FAILED/INTERNAL_ERROR result for a worker-level exception."""
     account = request.account
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    message = f"Internal error: {type(exc).__name__}: {exc}"[:300]
     record = RunRecord(
         run_id=request.run_id,
         account_id=account.account_id,
@@ -102,7 +102,7 @@ def _internal_error_result(
         finished_at=now,
         outcome=RunOutcome.FAILED,
         failure_reason=FailureReason.INTERNAL_ERROR,
-        error_message=message,
+        error_message=INTERNAL_ERROR_MESSAGE,
         replacement_set=account.replacement_set,
     )
     return AccountRunResult(
@@ -113,7 +113,7 @@ def _internal_error_result(
         source=source,
         outcome=RunOutcome.FAILED,
         failure_reason=FailureReason.INTERNAL_ERROR,
-        error_message=message,
+        error_message=INTERNAL_ERROR_MESSAGE,
         record=record,
     )
 
@@ -162,7 +162,10 @@ async def _run_batch(
         if isinstance(res, Exception):
             account = request.account
             _worker_logger.error(
-                "worker exception for %s %s: %s", strategy, account.account_id, res
+                "worker exception for %s %s (%s)",
+                strategy,
+                account.account_id,
+                type(res).__name__,
             )
             finalized.append(_internal_error_result(request, request.mode, request.source, res))
         else:
@@ -195,7 +198,7 @@ def execute_strategy_batch(
                 loop.close()
         return results
     except BaseException as exc:  # noqa: BLE001 - never raise from the worker
-        _worker_logger.error("worker batch failed for %s: %s", strategy, exc)
+        _worker_logger.error("worker batch failed for %s (%s)", strategy, type(exc).__name__)
         return [
             _internal_error_result(request, request.mode, request.source, exc)
             for request in requests

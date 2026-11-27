@@ -8,6 +8,9 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+INTERNAL_ERROR_MESSAGE = "An unexpected internal error occurred."
+
+
 class _ValueModel(BaseModel):
     """Strict base for values crossing the parent/worker boundary."""
 
