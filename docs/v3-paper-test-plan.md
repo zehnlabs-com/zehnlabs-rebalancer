@@ -1,3 +1,17 @@
+# Historical evidence — superseded
+
+> This v3 paper-acceptance plan is preserved as historical evidence. It targets the
+> removed file-based architecture and is superseded by
+> [Production-image paper acceptance](paper-acceptance.md). Do not execute its
+> `accounts.yaml`, `config.yaml`, manual-request, schedule-file, or JSONL instructions
+> against the current release.
+
+The original document is preserved unchanged below.
+
+Historical results remain in `docs/v3-paper-test-rerun-report-2026-11-23.md`; they are
+evidence for the earlier v3 release, not proof of the SQLite/dashboard/Railway release.
+
+---
 # Rebalancer v3 paper-acceptance plan
 
 Status: staged and offline-validated; awaiting paper credentials and weekend order

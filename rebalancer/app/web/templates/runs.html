@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Run history</h1>
+<form method="get" action="/runs">
+  <label>Account <input name="account_id" value="{{ filters.account_id }}"></label>
+  <label>Outcome
+    <select name="outcome">
+      <option value="">All outcomes</option>
+      {% for outcome in outcomes %}<option value="{{ outcome }}"{% if filters.outcome == outcome %} selected{% endif %}>{{ outcome }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Source
+    <select name="source">
+      <option value="">All sources</option>
+      {% for value, label in sources %}<option value="{{ value }}"{% if filters.source == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Date on or after <input type="date" name="since" value="{{ filters.since }}"></label>
+  <button type="submit">Filter Runs</button>
+</form>
+<table>
+  <thead><tr><th>Requested</th><th>Account</th><th>Source</th><th>Status</th><th>Outcome</th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+    <tr><td>{{ run.requested_at }}</td><td><a href="/runs/{{ run.run_id }}">{{ run.account_id }}</a></td><td>{{ run.source_label }}</td><td>{{ run.status }}</td><td>{{ run.outcome or "—" }}</td></tr>
+  {% else %}
+    <tr><td colspan="5">No Runs.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<nav aria-label="Run history pages">
+  {% if previous_url %}<a href="{{ previous_url }}">Previous</a>{% endif %}
+  <span>Page {{ page_number }}</span>
+  {% if next_url %}<a href="{{ next_url }}">Next</a>{% endif %}
+</nav>
+{% endblock %}

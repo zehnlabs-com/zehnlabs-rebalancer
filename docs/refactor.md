@@ -1,5 +1,7 @@
 # Rebalancing Engine — Refactor Assessment
 
+> Historical v3 design. Current architecture and operations are documented in `docs/architecture.md` and `docs/railway-dashboard-implementation-spec.md`.
+
 **Status:** discussion document. No code has been changed.
 **Scope:** the rebalancing algorithm and the surrounding service architecture.
 **Inputs reviewed:** `docs/rebalancing-logic.md` (1,214 lines), `packages/rebalance-calculator`,

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Work submission</h1>
+<p>Submission {{ receipt.submission_id }}</p>
+<p><a href="/work/submissions/{{ receipt.submission_id }}">Refresh results</a></p>
+{% set expired_items = receipt.items|rejectattr("history_retained")|list %}
+{% if expired_items %}
+<div class="warning" role="status">Current Work and Run history has expired. This archived onboarding receipt shows the Work Items originally created.</div>
+{% endif %}
+<table>
+  <thead><tr><th>Account</th><th>Action</th><th>Source</th><th>Status</th><th>Execution</th><th>Message</th><th>Run outcome</th></tr></thead>
+  <tbody>
+  {% for entry in receipt.items %}
+    {% set item = entry.item %}
+    <tr>
+      <td>{% if entry.history_retained %}<a href="/work/{{ item.work_id }}">{{ item.account_id }}</a>{% else %}{{ item.account_id }}{% endif %}</td>
+      <td>{{ item.action }}</td>
+      <td>{{ item.source }}</td>
+      <td>{{ item.status if entry.history_retained else "History expired" }}</td>
+      <td>{{ item.execute_at|eastern_time }}{% if item.source == "scheduled" %} (next market open){% endif %}</td>
+      <td>{{ item.message or (entry.run.error_message if entry.run else "—") }}</td>
+      <td>{% if entry.run %}<a href="/runs/{{ entry.run.run_id }}">{{ entry.run.outcome or entry.run.status }}</a>{% elif item.run_id and entry.history_retained %}Run history expired{% elif entry.history_retained %}Awaiting result{% else %}History expired{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

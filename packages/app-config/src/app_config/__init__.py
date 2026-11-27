@@ -1,4 +1,4 @@
-"""Application configuration management for Zehnlabs Rebalancer."""
+"""Code-owned application defaults for Zehnlabs Rebalancer."""
 
 from .models import (
     DEFAULT_ALLOCATIONS_BASE_URL,
@@ -11,8 +11,6 @@ from .models import (
     ExecutorConfig,
     APIConfig,
 )
-from .loader import load_config, get_config
-
 __all__ = [
     "DEFAULT_ALLOCATIONS_BASE_URL",
     "AppConfig",
@@ -23,6 +21,4 @@ __all__ = [
     "SchedulerConfig",
     "ExecutorConfig",
     "APIConfig",
-    "load_config",
-    "get_config",
 ]

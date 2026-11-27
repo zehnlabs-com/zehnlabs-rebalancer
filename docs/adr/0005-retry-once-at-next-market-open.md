@@ -1,11 +1,8 @@
-# Failed runs retry once at the next market open; scheduled failures never retry
+# Eligible failed Runs retry once at the next market open
 
-Every failing or market-closed **live** run (signal or manual source) queues the
-account into `data/market-open/scheduled.json` to run once more at the next open,
-with fresh data (PRD §10.5). A **scheduled** run that fails or finds
-the market closed is final — it is removed from the file and never re-added, and the
-user is sent a `FAILED_FINAL` notification telling them to fix the issue and run
-manually. Retries are always live-market only, never in preview. When the scheduler
-is disabled, failures are reported as `FAILED_FINAL` too. The queuing happens only
-in the parent process; the occasional cleanup race where a manual retry is
-accidentally removed is an accepted edge case (SCH-8).
+An eligible failed or market-closed live Signal, immediate Dashboard Run, or
+immediate Initial setup Run creates one durable `retry` rebalance Work Item for
+the next configured market open, using fresh data. A pending rebalance already
+satisfies the retry requirement and is reused. Scheduled and Retry Runs never
+create another retry. Preview never retries and may coexist with the one pending
+rebalance. All decisions and persistence remain in the parent process.

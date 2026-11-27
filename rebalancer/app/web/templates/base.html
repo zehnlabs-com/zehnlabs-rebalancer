@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Zehnlabs Rebalancer{% endblock %}</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+<header><strong>Zehnlabs Rebalancer</strong> <span class="mode">{{ mode }}</span>
+{% if csrf_token %}<nav><a href="/">Status</a> <a href="/accounts">Accounts</a> <a href="/work">Work</a> <a href="/runs">Runs</a>
+<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Log out</button></form></nav>{% endif %}
+</header>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

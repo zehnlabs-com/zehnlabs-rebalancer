@@ -1,25 +1,27 @@
 """WP5 acceptance tests: strict accounts.yaml (PRD §5.2)."""
 
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 import yaml
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "event-broker"))
+sys.path.insert(0, str(REPO / "rebalancer"))
 
-from app.accounts import load_accounts, AccountRegistry, AccountConfig  # noqa: E402
+from app.accounts import (  # noqa: E402
+    AccountConfig,
+    AccountRegistry,
+    DISCOVERY_CLIENT_ID,
+    parse_accounts_yaml,
+)
+from ibkr_connector import DISCOVERY_CLIENT_ID as CONNECTOR_DISCOVERY_CLIENT_ID  # noqa: E402
 
 REPLACEMENT_SETS = {"ira"}
 
 
-def write(accounts) -> Path:
-    f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
-    f.write(yaml.safe_dump({"accounts": accounts}))
-    f.close()
-    return Path(f.name)
+def document(accounts) -> str:
+    return yaml.safe_dump({"accounts": accounts})
 
 
 def acct(**over):
@@ -29,9 +31,15 @@ def acct(**over):
     return base
 
 
-class LoadTests(unittest.TestCase):
+class ImportTests(unittest.TestCase):
+    def test_discovery_client_id_comes_from_connector(self):
+        self.assertIs(DISCOVERY_CLIENT_ID, CONNECTOR_DISCOVERY_CLIENT_ID)
+
     def test_example_file_loads(self):
-        reg = load_accounts(REPO / "accounts.yaml.example", "paper")
+        accounts = parse_accounts_yaml(
+            (REPO / "accounts.yaml.example").read_text(encoding="utf-8")
+        )
+        reg = AccountRegistry.from_accounts(accounts, "paper")
         self.assertIsInstance(reg, AccountRegistry)
 
     def test_registry_filters_active_mode(self):
@@ -41,9 +49,7 @@ class LoadTests(unittest.TestCase):
             acct(account_id="U100003", enabled=False),
             acct(account_id="U100004", type="live"),
         ]
-        p = write(accounts)
-        self.addCleanup(p.unlink)
-        reg = load_accounts(p, "paper")
+        reg = AccountRegistry.from_accounts(parse_accounts_yaml(document(accounts)), "paper")
         self.assertEqual({a.account_id for a in reg.accounts}, {"U100001", "U100002"})
         self.assertEqual([a.account_id for a in reg.for_strategy("strategy-one")],
                          ["U100001", "U100002"])
@@ -58,10 +64,8 @@ class LoadTests(unittest.TestCase):
 
 class ErrorTests(unittest.TestCase):
     def expect(self, accounts, fragment):
-        p = write(accounts)
-        self.addCleanup(p.unlink)
         with self.assertRaises(ValueError) as ctx:
-            load_accounts(p, "paper")
+            parse_accounts_yaml(document(accounts))
         self.assertIn(fragment, str(ctx.exception))
 
     def test_removed_cash_reserve_key(self):
@@ -110,10 +114,10 @@ class ErrorTests(unittest.TestCase):
                     "produce the same IBKR client ID 123456")
 
     def test_all_problems_fail_once(self):
-        p = write([acct(cash_reserve_percent=1.0), acct(bogus=1)])
-        self.addCleanup(p.unlink)
         with self.assertRaises(ValueError) as ctx:
-            load_accounts(p, "paper")
+            parse_accounts_yaml(
+                document([acct(cash_reserve_percent=1.0), acct(bogus=1)])
+            )
         msg = str(ctx.exception)
         self.assertIn("cash_reserve_percent", msg)
         self.assertIn("unknown setting 'bogus'", msg)

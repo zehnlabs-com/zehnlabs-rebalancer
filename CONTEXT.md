@@ -1,100 +1,45 @@
 # Zehnlabs Rebalancer
 
-The domain of the Zehnlabs Portfolio Rebalancer: turning a strategy's target
-weightings for one account into a set of whole-share buy and sell orders, without
-ever spending more cash than the account holds. The authoritative behaviour
-specification is `docs/refactor-prd.md` (v3.0.0).
+The Rebalancer turns a Strategy's target weights for one Account into whole-share IBKR orders without spending more cash than the Account holds. `docs/railway-dashboard-implementation-spec.md` is the current source of truth.
 
 ## Language
 
-**Account**:
-One IBKR account listed in `accounts.yaml`. A rebalance is always performed for a single account.
-_Avoid_: portfolio, client, user
+**Account**: One SQLite-configured IBKR Account. A Run is always for one Account. Avoid “portfolio”, “client”, or “user”.
 
-**Strategy**:
-A Zehnlabs strategy (e.g. `etf-blend-200-35`) whose target weights come from the allocations API. One strategy can drive many accounts.
-_Avoid_: model, portfolio template
+**Strategy**: A Zehnlabs Strategy whose allocations can drive many Accounts. Avoid “model” or “portfolio template”.
 
-**Allocation**:
-One raw symbol–weight pair fetched from the allocations API for a strategy, before any normalisation or replacement.
-_Avoid_: target, pick
+**Allocation**: A raw symbol/weight pair from the API before normalization or replacement. Avoid “target”.
 
-**Target**:
-The final weight for one symbol for an account after validation, scaling and replacement. Targets always sum to exactly 1.0 unless the list is empty.
-_Avoid_: the raw API weight is an allocation, not a target
+**Target**: A final Account symbol weight after validation, scaling, and optional Replacement Set.
 
-**Signal**:
-A message on a strategy's Ably channel that triggers a run for every enabled account of that strategy.
-_Avoid_: event, trigger message
+**Signal**: An Ably message on a Strategy channel that requests a Run for every enabled Account assigned to that Strategy.
 
-**Source**:
-What started a run: `signal` (Ably), `manual` (`tools/rebalance.sh`) or `scheduled` (the market-open job).
-_Avoid_: event type, reason
+**Source**: What started a Run: `signal`, `dashboard`, `initial`, `scheduled`, or `retry`.
 
-**Run**:
-One attempt to rebalance one account. Identified by a `run_id`. Runs never raise; every failure becomes a recorded outcome.
-_Avoid_: job, trade (a run may place zero, one, or many trades)
+**Run**: One attempt for one Account, identified by `run_id`. A Run never raises across the process boundary; failures are typed outcomes.
 
-**Batch**:
-All the runs for one strategy started together in one worker process.
-_Avoid_: job, task group
+**Batch**: Runs for one Strategy submitted together to one worker process.
 
-**Mode**:
-`live` (places orders) or `preview` (places nothing).
-_Avoid_: exec, dry-run
+**Mode**: `live` places orders; `preview` places and cancels nothing.
 
-**Weight**:
-A fraction of the account's strategy capital, excluding the fixed cash reserve (`0.25` means 25%). Weights from the API are fractions.
-_Avoid_: percent (the glossary uses the fraction everywhere)
+**Work Item**: A durable dashboard/initial/scheduled/retry request. Its action is `preview` or `rebalance`. Signals do not create Work Items.
 
-**Mark**:
-The price used to value a holding. Derived per symbol from a fixed fallback chain (mid → last → close → bar close).
-_Avoid_: price, fair value
+**Run record**: The typed investigation detail stored losslessly with the Run in SQLite for 30 days.
 
-**Buy reference**:
-The price used to size a buy.
-_Avoid_: trigger price, fill price
+**Weight**: A fraction of Strategy capital outside the fixed reserve.
 
-**Limit price**:
-The highest price a buy order may pay: buy reference × (1 + slippage).
-_Avoid_: max price
+**Mark**: The holding valuation price from mid → last → close → bar close.
 
-**Total value (V)**:
-`cash + Σ(holding quantity × mark)`, computed by us. It is not IBKR's NetLiquidation.
-_Avoid_: net worth, NetLiq
+**Buy reference**: The price used to size a buy. **Limit price** is buy reference plus configured slippage.
 
-**Cash floor / reserve**:
-`minimum_cash_reserve_percent` of total value at the start of a run (`V0`). It is a fixed dollar cash allocation outside the strategy, reused unchanged for sell and buy planning.
-_Avoid_: minimum cash, safety buffer
+**Total value (V)**: cash plus marked holdings, calculated by this application rather than IBKR NetLiquidation.
 
-**Target base**:
-Account value available to the strategy: `max(0, V0 − reserve)` for sells and `max(0, V1 − reserve)` for buys.
-_Avoid_: budget (budget is cash-only)
+**Cash floor / reserve**: A fixed dollar amount calculated once from start-of-Run value and kept outside Strategy capital.
 
-**Budget**:
-Cash available for buys: cash base − reserve.
-_Avoid_: spendable cash
+**Target base**: Account value available to Strategy targets after the reserve. **Budget** is cash available to buys after the reserve.
 
-**Own order**:
-A working order on this account placed by this app (with this account's client ID).
-_Avoid_: our order
+**Own order**: A working order placed by this application/client ID. **Foreign order**: a working order placed by anything else. **Working order**: an order not terminal.
 
-**Foreign order**:
-A working order on this account placed by anything else (manual TWS/mobile, another program).
-_Avoid_: outside order
+**Whole-share broker**: A broker whose Account changes use whole shares; IBKR is one. Existing fractional residue remains immutable.
 
-**Working order**:
-An order that is not yet filled, cancelled or rejected.
-_Avoid_: open order (reserved for the IBKR API term)
-
-**Whole-share broker**:
-A broker whose `supports_fractional` is false. IBKR is one; a portfolio-wide optimizer selects broker-reachable whole-share quantities while preserving any existing fractional residue.
-_Avoid_: integer broker
-
-**Replacement set**:
-A fixed set of symbol-replacement rules (e.g. `ira`) compiled into the code, applied after targets are validated to keep an account's exposure within what it may hold.
-_Avoid_: the removed config section formerly called `replacement`
-
-**Run record**:
-The per-run investigation data written to `data/runs/`, kept for 30 days.
-_Avoid_: log entry, audit trail
+**Replacement Set**: Compiled symbol-replacement rules applied after target validation.

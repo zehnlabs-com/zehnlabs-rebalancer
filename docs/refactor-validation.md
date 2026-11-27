@@ -1,5 +1,7 @@
 # Refactor plan — validation
 
+> Historical validation of the file-backed v3 release; it is not current dashboard/SQLite release guidance.
+
 **Date:** 2026-11-19 · **Status:** review only. No repository code was changed.
 **Reviewed:** `docs/refactor.md` (the plan), `docs/rebalancing-logic.md` (the spec of today's engine),
 `docs/research/ib-gateway-upgrade.md`, every source file under `packages/*/src` and `event-broker/app`,

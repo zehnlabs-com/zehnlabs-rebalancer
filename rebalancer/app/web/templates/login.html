@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block title %}Login · Rebalancer{% endblock %}{% block content %}
+<h1>Dashboard login</h1>{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<label>Username <input name="username" autocomplete="username" maxlength="256" required></label>
+<label>Password <input type="password" name="password" autocomplete="current-password" maxlength="1024" required></label>
+<button>Log in</button></form>{% endblock %}

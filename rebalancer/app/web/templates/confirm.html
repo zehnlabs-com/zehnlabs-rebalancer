@@ -1,0 +1,4 @@
+{% extends "base.html" %}{% block content %}<h1>Confirm {{ confirmation.action.value }}</h1>
+<dl><dt>Account</dt><dd>{{ confirmation.account.account_id }}</dd><dt>Strategy</dt><dd>{{ confirmation.account.strategy_name }}</dd><dt>Replacement Set</dt><dd>{{ confirmation.account.replacement_set or "None" }}</dd><dt>Execution</dt><dd>{{ confirmation.execute_at|eastern_time }}{% if confirmation.scheduled %} (next market open){% else %} (now){% endif %}</dd></dl>
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="request_token" value="{{ request_token }}">
+{% if confirmation.live_ack_required %}<label><input type="checkbox" name="live_acknowledgement" required> I understand this action may place live broker orders.</label>{% endif %}<button>Confirm {{ confirmation.action.value }}</button></form>{% endblock %}

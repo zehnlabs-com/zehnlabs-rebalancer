@@ -1,21 +1,17 @@
-# You can configure as many accounts in this file as needed.
-# Each strategy must have a valid subscription and can be traded in multiple accounts.
+# Dashboard Account import/export compatibility format only. Import validates
+# the complete document before saving it. After import, SQLite is authoritative;
+# editing or mounting this file and restarting the service has no effect.
 #
-# IMPORTANT: After modifying this file, restart services to apply changes:
-#   docker compose restart
-#
-# Configuration is validated strictly at startup (PRD §5.2). The old keys
-# `cash_reserve_percent` and `pdt_protection_enabled` are gone.
-
+# The old `cash_reserve_percent` and `pdt_protection_enabled` keys are invalid.
 accounts:
   # Account 1
   ############
   # IBKR account ID (uppercase letters/digits, must contain at least one digit)
   - account_id: U123456
     # Account type: "paper" for paper trading, "live" for live trading
-    # Only accounts matching TRADING_MODE environment variable are processed
+    # Imports and exports preserve both modes; the dashboard shows the active mode.
     type: paper
-    # Enable/disable account: if false, allocation triggers are ignored
+    # Enable/disable Account; disabled assignments are preserved for later use.
     enabled: true
     # Optional: replacement set for IRA accounts that cannot trade certain ETFs.
     # Valid sets: ira

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Accounts</h1>
+{% if error %}
+<div class="error" role="alert">
+  <strong>Account configuration was not saved.</strong> {{ error }}
+  {% if error_summary %}<ul>{% for item in error_summary %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+</div>
+{% endif %}
+{% if message %}<div class="success" role="status">{{ message }}</div>{% endif %}
+<form method="post" action="{{ '/onboarding/discover' if onboarding else '/accounts/discover' }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button>Discover managed Accounts and Strategies</button>
+</form>
+{% if discovery %}
+<p>Discovery found {{ discovery.accounts|length }} managed Account(s) and {{ discovery.strategies|length }} available Strategy choice(s). Select only the Accounts to store.</p>
+<datalist id="strategy-catalog">{% for strategy in discovery.strategies %}<option value="{{ strategy.name }}">{{ strategy.long_name }}</option>{% endfor %}</datalist>
+{% endif %}
+<form method="post" action="{{ save_action }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% for row in rows %}
+  {% set errors = field_errors.get(row.account_id, {}) %}
+  <fieldset>
+    <legend>{{ row.account_id }}{% if row.discovered %} · discovered{% endif %}</legend>
+    {% if errors.get('account_id') %}<p id="account-error-{{ loop.index }}" class="error">Account: {{ errors.get('account_id') }}</p>{% endif %}
+    <label for="selected-{{ loop.index }}"><input id="selected-{{ loop.index }}" type="checkbox" name="selected_account_id" value="{{ row.account_id }}" {% if row.selected %}checked{% endif %} {% if errors.get('account_id') %}aria-invalid="true" aria-describedby="account-error-{{ loop.index }}"{% endif %}> Store this Account</label>
+    <label for="strategy-{{ loop.index }}">Strategy</label>
+    <input id="strategy-{{ loop.index }}" name="strategy_{{ row.account_id }}" value="{{ row.strategy_name }}" {% if discovery %}list="strategy-catalog"{% endif %} {% if errors.get('strategy_name') %}aria-invalid="true" aria-describedby="strategy-error-{{ loop.index }}"{% endif %}>
+    {% if errors.get('strategy_name') %}<p id="strategy-error-{{ loop.index }}" class="error">Strategy: {{ errors.get('strategy_name') }}</p>{% endif %}
+    <label for="replacement-{{ loop.index }}">Replacement Set</label>
+    <select id="replacement-{{ loop.index }}" name="replacement_{{ row.account_id }}" {% if errors.get('replacement_set') %}aria-invalid="true" aria-describedby="replacement-error-{{ loop.index }}"{% endif %}>
+      <option value="">None</option>
+      {% if discovery %}{% for replacement in discovery.replacement_sets %}<option value="{{ replacement.name }}" {% if row.replacement_set == replacement.name %}selected{% endif %}>{{ replacement.name }}</option>{% endfor %}
+      {% elif row.replacement_set %}<option value="{{ row.replacement_set }}" selected>{{ row.replacement_set }}</option>{% endif %}
+    </select>
+    {% if errors.get('replacement_set') %}<p id="replacement-error-{{ loop.index }}" class="error">Replacement Set: {{ errors.get('replacement_set') }}</p>{% endif %}
+    <label for="enabled-{{ loop.index }}"><input id="enabled-{{ loop.index }}" type="checkbox" name="enabled_{{ row.account_id }}" {% if row.enabled %}checked{% endif %}> Enable trading for this Account</label>
+    {% if row.selected and row.enabled %}<a href="/accounts/{{ row.account_id }}/preview">Preview</a> <a href="/accounts/{{ row.account_id }}/rebalance">Rebalance now</a> <a href="/accounts/{{ row.account_id }}/schedule">Schedule</a>{% endif %}
+  </fieldset>
+  {% else %}<p>No Accounts stored or discovered for this mode. Run discovery or import a migration document to begin.</p>{% endfor %}
+  <button>Validate and save complete Account set</button>
+</form>
+{% if onboarding %}
+<h2>Continue onboarding</h2>
+<form method="post" action="/onboarding/preview"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="request_token" value="{{ preview_token }}"><button>Preview all enabled Accounts</button></form>
+<h3>Confirm initial rebalance work</h3>
+{% for confirmation in initial_confirmations %}
+<dl><dt>Account</dt><dd>{{ confirmation.account.account_id }}</dd><dt>Strategy</dt><dd>{{ confirmation.account.strategy_name }}</dd><dt>Replacement Set</dt><dd>{{ confirmation.account.replacement_set or "None" }}</dd><dt>Action</dt><dd>Initial rebalance</dd><dt>Execution</dt><dd>{{ confirmation.execute_at|eastern_time }}{% if confirmation.scheduled %} (next configured XNYS time){% else %} (now){% endif %}</dd></dl>
+{% else %}<p>No enabled Accounts are ready for initial rebalance work.</p>{% endfor %}
+<form method="post" action="/onboarding/finish"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="request_token" value="{{ finish_token }}">{% if live_ack_required %}<label><input type="checkbox" name="live_acknowledgement" required> I understand this initial action may place live broker orders for the Accounts and times shown above.</label>{% endif %}<button>Finish and create initial rebalance work</button></form>
+{% endif %}
+<form method="post" action="/accounts/import" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Legacy Account YAML <input type="file" name="file" accept=".yaml,.yml" required></label><button>Import</button></form>
+<p><a href="/accounts/export">Export all Account configuration</a></p>
+{% endblock %}

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Onboarding</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<dl>
+  <dt>Gateway</dt><dd>{{ status.readiness.gateway_state }} — {{ status.readiness.gateway_message }}</dd>
+  <dt>Zehnlabs</dt><dd>{{ status.readiness.zehnlabs_state }} — {{ status.readiness.zehnlabs_message }}</dd>
+  <dt>Ably</dt><dd>{{ status.readiness.ably_state }} — {{ status.readiness.ably_message }}</dd>
+</dl>
+<form method="post" action="/onboarding/discover"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Discover Accounts and Strategies</button></form>
+<form method="post" action="/onboarding/preview"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="request_token" value="{{ preview_token }}"><button>Preview all enabled Accounts</button></form>
+<h2>Confirm initial rebalance work</h2>
+{% for confirmation in initial_confirmations %}
+<dl><dt>Account</dt><dd>{{ confirmation.account.account_id }}</dd><dt>Strategy</dt><dd>{{ confirmation.account.strategy_name }}</dd><dt>Replacement Set</dt><dd>{{ confirmation.account.replacement_set or "None" }}</dd><dt>Action</dt><dd>Initial rebalance</dd><dt>Execution</dt><dd>{{ confirmation.execute_at|eastern_time }}{% if confirmation.scheduled %} (next configured XNYS time){% else %} (now){% endif %}</dd></dl>
+{% else %}<p>No enabled Accounts are ready for initial rebalance work.</p>{% endfor %}
+<form method="post" action="/onboarding/finish"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="request_token" value="{{ finish_token }}">{% if live_ack_required %}<label><input type="checkbox" name="live_acknowledgement" required> I understand this initial action may place live broker orders for the Accounts and times shown above.</label>{% endif %}<button>Finish and create initial rebalance work</button></form>
+{% endblock %}

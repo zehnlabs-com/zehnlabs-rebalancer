@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Status</h1>
+<p>Mode: <strong>{{ status.trading_mode|upper }}</strong></p>
+<p>Onboarding: {{ "complete" if status.onboarded else "required" }}</p>
+<dl>
+  <dt>Gateway</dt><dd>{{ status.readiness.gateway_state }} — {{ status.readiness.gateway_message }}</dd>
+  <dt>Zehnlabs</dt><dd>{{ status.readiness.zehnlabs_state }} — {{ status.readiness.zehnlabs_message }}</dd>
+  <dt>Ably</dt><dd>{{ status.readiness.ably_state }} — {{ status.readiness.ably_message }}</dd>
+</dl>
+<p>Pending Work Items: {{ status.pending_work }}</p>
+{% if status.critical_storage_error %}<div class="error">{{ status.critical_storage_error }}</div>{% endif %}
+{% if status.readiness.degraded_error %}<div class="warning">{{ status.readiness.degraded_error }}</div>{% endif %}
+{% if not status.onboarded %}<p><a href="/onboarding">Start onboarding</a></p>{% endif %}
+<h2>Recent Runs</h2><ul>{% for run in status.recent_runs %}<li><a href="/runs/{{ run.run_id }}">{{ run.account_id }} · {{ run.status }}</a></li>{% else %}<li>No Runs yet.</li>{% endfor %}</ul>
+{% endblock %}

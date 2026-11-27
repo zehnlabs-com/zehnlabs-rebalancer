@@ -1,5 +1,7 @@
 # Rebalancer Refactor: Product Requirements Document (PRD)
 
+> Historical v3 source of truth. The current SQLite/dashboard/Railway release is governed by `docs/railway-dashboard-implementation-spec.md`; do not use this document's file-backed operating instructions for the current release.
+
 **Status:** approved for implementation · **Owner:** Faisal Haroon · **Written:** 2026-11-19
 **Target release:** system version `3.0.0` (breaking configuration changes)
 **Repository:** `zehnlabs-rebalancer` (this repository) · **Branch:** `feat/refactor-2026`

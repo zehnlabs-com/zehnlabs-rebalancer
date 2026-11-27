@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import sys as _sys
 
 REPO = Path(__file__).resolve().parents[1]
-_sys.path.insert(0, str(REPO / "event-broker"))
+_sys.path.insert(0, str(REPO / "rebalancer"))
 
 from app_config import AppConfig  # noqa: E402
 from broker_connector_base import (  # noqa: E402
@@ -25,7 +25,7 @@ from broker_connector_base import (  # noqa: E402
 from rebalance_calculator import OptimizationError  # noqa: E402
 
 from app.accounts import AccountConfig  # noqa: E402
-from app.rebalance import rebalance_account, RunDeps  # noqa: E402
+from app.rebalance import rebalance_account as _rebalance_account, RunDeps  # noqa: E402
 from app.results import FailureReason, RunOutcome  # noqa: E402
 from app.services.notification_service import (  # noqa: E402
     NotificationContext,
@@ -60,6 +60,19 @@ FILLS = {
 }
 
 
+async def rebalance_account(account, mode, source, deps):
+    """Keep the trading regression cases focused on behavior, not ID creation."""
+    if source == "manual":
+        source = "dashboard"
+    return await _rebalance_account(
+        account,
+        mode,
+        source,
+        deps,
+        run_id=f"test-{account.account_id}",
+    )
+
+
 def cfg(reserve_percent=0.25) -> AppConfig:
     c = AppConfig(
         trading={
@@ -72,9 +85,12 @@ def cfg(reserve_percent=0.25) -> AppConfig:
             "cash_update_timeout_seconds": 0,
         }
     )
-    # speed up the never-fill timeout test without model-side validation
-    c.trading.order_timeout_seconds = 0
-    return c
+    # speed up the never-fill timeout test without weakening production validation
+    return c.model_copy(
+        update={
+            "trading": c.trading.model_copy(update={"order_timeout_seconds": 0})
+        }
+    )
 
 
 def make_deps(conn, clock, allocs=None, app_config=None):
@@ -103,7 +119,7 @@ class HappyPathTests(unittest.IsolatedAsyncioTestCase):
         sell = next(e for e in result.executed if e.symbol == "XLE")
         self.assertEqual(sell.filled_quantity, 100)
         self.assertEqual(sell.average_fill_price, 84.95)
-        self.assertEqual(result.record["cash_base"], 10995.0)
+        self.assertEqual(result.record.cash_base, 10995.0)
         self.assertAlmostEqual(result.cash_end, 355.0, places=2)
         self.assertAlmostEqual(result.value_end, 104026.45, places=2)
         self.assertEqual([o.symbol for o in result.planned_sells], ["XLE"])
@@ -239,9 +255,9 @@ class OptimizedExecutionShapeTests(unittest.IsolatedAsyncioTestCase):
             [(order.symbol, order.side, order.quantity) for order in live_conn.placed],
             [("A", Side.SELL, 1), ("B", Side.BUY, 2)],
         )
-        self.assertEqual(live.record["trimmed"], ["A"])
+        self.assertEqual(live.record.trimmed, ["A"])
         self.assertEqual(
-            [(order["symbol"], order["quantity"]) for order in live.record["planned_buys"]],
+            [(order.symbol, order.quantity) for order in live.record.planned_buys],
             [("B", 2)],
         )
 
@@ -361,7 +377,7 @@ class BuyTrimmingPropagationTests(unittest.IsolatedAsyncioTestCase):
                     [(order.symbol, order.quantity) for order in result.planned_buys],
                     [("C", 70)],
                 )
-                self.assertEqual(result.record["trimmed"], ["A"])
+                self.assertEqual(result.record.trimmed, ["A"])
                 warnings = [note.text for note in result.notes if note.level == "warning"]
                 self.assertEqual(
                     warnings,
@@ -408,12 +424,12 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 make_deps(conn, open_clock(), allocs=targets, app_config=cfg(5.0)),
             )
             self.assertEqual(result.outcome, outcome)
-            self.assertEqual(result.record["V0"], 1000.0)
-            self.assertEqual(result.record["reserve"], 50.0)
-            self.assertEqual(result.record["V0"] - result.record["reserve"], 950.0)
-            self.assertEqual(result.record["cash_base"], 221.0)
-            self.assertEqual(result.record["V1"], 981.0)
-            self.assertEqual(result.record["V1"] - result.record["reserve"], 931.0)
+            self.assertEqual(result.record.V0, 1000.0)
+            self.assertEqual(result.record.reserve, 50.0)
+            self.assertEqual(result.record.V0 - result.record.reserve, 950.0)
+            self.assertEqual(result.record.cash_base, 221.0)
+            self.assertEqual(result.record.V1, 981.0)
+            self.assertEqual(result.record.V1 - result.record.reserve, 931.0)
             self.assertEqual(
                 [(order.symbol, order.quantity) for order in result.planned_sells],
                 [("H", 90), ("X", 100)],
@@ -422,7 +438,7 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 [(order.symbol, order.quantity) for order in result.planned_buys],
                 [("L", 15), ("M", 139)],
             )
-            self.assertEqual(result.record["trimmed"], ["L", "M"])
+            self.assertEqual(result.record.trimmed, ["L", "M"])
             warnings = [note.text for note in result.notes if note.level == "warning"]
             self.assertEqual(
                 warnings,
@@ -437,7 +453,7 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(results["preview"].planned_sells, results["live"].planned_sells)
         self.assertEqual(results["preview"].planned_buys, results["live"].planned_buys)
-        self.assertEqual(results["preview"].record["trimmed"], results["live"].record["trimmed"])
+        self.assertEqual(results["preview"].record.trimmed, results["live"].record.trimmed)
 
     async def test_initial_plan_fails_when_even_all_sells_cannot_establish_reserve(self):
         state = AccountState(
@@ -463,9 +479,9 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(result.outcome, RunOutcome.FAILED)
             self.assertEqual(result.failure_reason, FailureReason.OPTIMIZATION_FAILED)
-            self.assertIsNone(result.record["reserve"])
-            self.assertIsNone(result.record["cash_base"])
-            self.assertIsNone(result.record["V1"])
+            self.assertIsNone(result.record.reserve)
+            self.assertIsNone(result.record.cash_base)
+            self.assertIsNone(result.record.V1)
             self.assertEqual(conn.placed, [])
             self.assertEqual(result.planned_buys, [])
 
@@ -505,11 +521,14 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         result = await rebalance_account(ACCOUNT, "live", "signal", make_deps(conn, open_clock()))
         self.assertEqual(result.failure_reason, FailureReason.ACCOUNT_DATA_MISMATCH)
         # REC-2: the failed run's record keeps the snapshot it was judged on.
-        self.assertAlmostEqual(result.record["V0"], 104031.45, places=6)
-        self.assertEqual(result.record["state0"]["cash"], 2500.0)
-        self.assertEqual(result.record["state0"]["net_liquidation"], 100000.0)
+        self.assertAlmostEqual(result.record.V0, 104031.45, places=6)
+        state0 = result.record.state0
+        self.assertIsNotNone(state0)
+        assert state0 is not None
+        self.assertEqual(state0.cash, 2500.0)
+        self.assertEqual(state0.net_liquidation, 100000.0)
         self.assertEqual(
-            result.record["state0"]["positions"],
+            [position.model_dump() for position in state0.positions],
             [{"symbol": "SPY", "quantity": 70}, {"symbol": "TLT", "quantity": 400},
              {"symbol": "GLD", "quantity": 60}, {"symbol": "XLE", "quantity": 100.37}],
         )
@@ -545,7 +564,7 @@ class CashTests(unittest.IsolatedAsyncioTestCase):
         result = await rebalance_account(ACCOUNT, "live", "signal", make_deps(conn, open_clock()))
         self.assertEqual(result.outcome, RunOutcome.SUCCEEDED)
         # reported cash stayed at 2500 (sells invisible); state0.cash + gross = 10995
-        self.assertEqual(result.record["cash_base"], 2500.0)
+        self.assertEqual(result.record.cash_base, 2500.0)
 
 
 class InternalErrorTests(unittest.IsolatedAsyncioTestCase):

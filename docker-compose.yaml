@@ -2,6 +2,7 @@ x-system-version: &system-version "3.0.0"
 
 volumes:
   ib_settings:
+  rebalancer_state:
 
 networks:
   ibkr-network:
@@ -42,13 +43,15 @@ services:
         max-file: "10"
     restart: unless-stopped
 
-  event-broker:
+  rebalancer:
     build:
       context: .
-      dockerfile: ./event-broker/Dockerfile
+      dockerfile: ./rebalancer/Dockerfile
       args:
         VERSION: *system-version
     environment:
+      PORT: "18778"
+      DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SERVICE_VERSION: *system-version
       TRADING_MODE: ${TRADING_MODE:-paper}
@@ -56,12 +59,14 @@ services:
       ALLOCATIONS_BASE_URL: ${ALLOCATIONS_BASE_URL:-https://workers.fintech.zehnlabs.com/api/v1/strategies}
       ZEHNLABS_API_KEY: ${ZEHNLABS_API_KEY}
       USER_NOTIFICATIONS_ENABLED: ${USER_NOTIFICATIONS_ENABLED:-false}
-      USER_NOTIFICATIONS_CHANNEL: ${USER_NOTIFICATIONS_CHANNEL}
+      USER_NOTIFICATIONS_CHANNEL: ${USER_NOTIFICATIONS_CHANNEL:-}
       TZ: America/New_York
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./accounts.yaml:/app/accounts.yaml:ro
-      - ./data:/app/data
+      - rebalancer_state:/app/state
+    ports:
+      - "127.0.0.1:18778:18778"
+    depends_on:
+      - ibkr-gateway
     networks:
       - ibkr-network
     logging:

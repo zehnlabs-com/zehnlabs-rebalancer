@@ -1,6 +1,6 @@
 #!/bin/bash
-# Development reload script for event-broker service
+# Development reload script for the rebalancer service
 # Usage: ./tools/reload.sh
 
-echo "🔄 Reloading event-broker..."
-docker compose stop event-broker && docker compose up -d event-broker
+echo "Reloading rebalancer..."
+docker compose stop rebalancer && docker compose up -d --build rebalancer

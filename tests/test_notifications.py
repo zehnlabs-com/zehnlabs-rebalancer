@@ -7,20 +7,30 @@ from pathlib import Path
 from unittest.mock import patch
 
 _ = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_ / "event-broker"))
+sys.path.insert(0, str(_ / "rebalancer"))
 
 from app.results import (  # noqa: E402
     AccountRunResult,
     ExecutedOrder,
+    FailureReason,
     NoteOut,
     PlannedOrderOut,
     RunOutcome,
+    RunRecord,
+    WorkAction,
 )
 from app.services.notification_service import (  # noqa: E402
     NotificationContext,
     NotificationKind,
     NtfyNotifier,
     render,
+)
+from app.state.models import (  # noqa: E402
+    RetryDecision,
+    RetryDisposition,
+    WorkItem,
+    WorkSource,
+    WorkStatus,
 )
 
 ACCOUNT_ID = "U123456"
@@ -34,9 +44,20 @@ def base_result(**kw) -> AccountRunResult:
         mode="live",
         source="signal",
         outcome=RunOutcome.SUCCEEDED,
-        record={"started_at": "2026-11-20T15:52:10-05:00"},
     )
     data.update(kw)
+    data["record"] = RunRecord(
+        run_id=data["run_id"],
+        account_id=data["account_id"],
+        strategy_name=data["strategy_name"],
+        mode=data["mode"],
+        source=data["source"],
+        started_at="2026-11-20T20:52:10Z",
+        finished_at="2026-11-20T20:52:10Z",
+        outcome=data["outcome"],
+        failure_reason=data.get("failure_reason"),
+        error_message=data.get("error_message"),
+    )
     return AccountRunResult(**data)
 
 
@@ -53,7 +74,10 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(msg.title, "✅ Rebalance complete")
         self.assertIn("Account: U***456", msg.body)
         self.assertIn("Strategy: ETF Blend 200-35", msg.body)
-        self.assertIn("Time: 2026-11-20 15:52:10 ET", msg.body)
+        self.assertIn("Source: Signal", msg.body)
+        self.assertIn(
+            "Time: 2026-11-20 15:52 EST (America/New_York)", msg.body
+        )
         self.assertNotIn(result.run_id, msg.body)
         self.assertIn("Orders: 1 sells, 0 buys", msg.body)
         self.assertIn("Portfolio value ≈ $104,031.45", msg.body)
@@ -63,10 +87,18 @@ class RenderTests(unittest.TestCase):
     def test_each_kind_title_and_key_line(self):
         cases = [
             (NotificationKind.SUCCESS, "✅ Rebalance complete", "Orders:"),
-            (NotificationKind.FAILED_WILL_RETRY, "⚠️ Rebalance failed: will retry", "Retry:"),
-            (NotificationKind.QUEUED_MARKET_CLOSED, "🕒 Market closed: rebalance queued", "Will run:"),
+            (
+                NotificationKind.FAILED_WILL_RETRY,
+                "⚠️ Rebalance failed: will retry",
+                "Next-open retry:",
+            ),
+            (
+                NotificationKind.QUEUED_MARKET_CLOSED,
+                "🕒 Market closed: rebalance queued",
+                "Next-open retry will run:",
+            ),
             (NotificationKind.FAILED_FINAL, "❌ Rebalance failed: not retried", "not be retried automatically"),
-            (NotificationKind.SKIPPED_FINAL, "❌ Scheduled rebalance skipped", "already running"),
+            (NotificationKind.SKIPPED_FINAL, "⏭️ Rebalance request skipped", "already running"),
             (NotificationKind.PREVIEW, "🔎 Rebalance preview", "Portfolio value ≈"),
             (NotificationKind.PREVIEW_FAILED, "❌ Rebalance preview failed", "Error:"),
         ]
@@ -82,9 +114,9 @@ class RenderTests(unittest.TestCase):
                                                            quantity=62, limit_price=92.11)],
                           "value_end": 1000.0}
                 result = base_result(**kw)
-                ctx = NotificationContext(kind=kind, next_run=None)
+                ctx = NotificationContext(kind=kind)
                 if kind in (NotificationKind.FAILED_WILL_RETRY, NotificationKind.QUEUED_MARKET_CLOSED):
-                    ctx = NotificationContext(kind=kind, next_run=_next_run())
+                    ctx = _retry_context(kind)
                 msg = render(result, ctx)
                 self.assertEqual(msg.title, title)
                 self.assertIn(key, msg.body)
@@ -160,16 +192,94 @@ class RenderTests(unittest.TestCase):
             planned_buys=[PlannedOrderOut(symbol="GLD", side="BUY", quantity=12,
                                           limit_price=250.0)],
         )
-        body = render(partial, NotificationContext(kind=NotificationKind.FAILED_WILL_RETRY,
-                                                   next_run=_next_run())).body
+        body = render(partial, _retry_context(NotificationKind.FAILED_WILL_RETRY)).body
         self.assertIn("SOLD 30 of 40 XLE", body)
         self.assertIn("BUY orders did not complete.", body)
 
+    def test_retry_message_describes_durable_created_or_reused_work(self):
+        failed = base_result(outcome=RunOutcome.FAILED, error_message="e")
+        created = render(
+            failed,
+            _retry_context(NotificationKind.FAILED_WILL_RETRY),
+        ).body
+        self.assertIn("2026-11-21 09:35 EST (America/New_York)", created)
+        self.assertIn("Next-open retry", created)
+        self.assertIn("next market open", created)
 
-def _next_run():
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    return datetime(2026, 11, 21, 9, 35, tzinfo=ZoneInfo("America/New_York"))
+        reused_scheduled = render(
+            failed,
+            _retry_context(
+                NotificationKind.FAILED_WILL_RETRY,
+                disposition=RetryDisposition.REUSED,
+                source=WorkSource.SCHEDULED,
+            ),
+        ).body
+        self.assertIn("already scheduled", reused_scheduled)
+        self.assertIn("next market open", reused_scheduled)
+
+        reused_immediate = render(
+            failed,
+            _retry_context(
+                NotificationKind.FAILED_WILL_RETRY,
+                disposition=RetryDisposition.REUSED,
+                source=WorkSource.DASHBOARD,
+                execute_at="2026-11-20T20:50:00.000000Z",
+            ),
+        ).body
+        self.assertIn("2026-11-20 15:50 EST (America/New_York)", reused_immediate)
+        self.assertNotIn("next market open", reused_immediate.lower())
+
+    def test_source_labels_and_strategy_busy_message(self):
+        for source, label in [
+            ("signal", "Signal"),
+            ("dashboard", "Dashboard"),
+            ("initial", "Initial setup"),
+            ("scheduled", "Scheduled"),
+            ("retry", "Next-open retry"),
+        ]:
+            with self.subTest(source=source):
+                result = base_result(source=source)
+                body = render(
+                    result, NotificationContext(kind=NotificationKind.SUCCESS)
+                ).body
+                self.assertIn(f"Source: {label}", body)
+
+        busy = base_result(
+            source="scheduled",
+            outcome=RunOutcome.FAILED,
+            failure_reason=FailureReason.STRATEGY_BUSY,
+        )
+        body = render(
+            busy, NotificationContext(kind=NotificationKind.FAILED_FINAL)
+        ).body
+        self.assertIn(
+            "The Strategy was already running; this request did not reach the broker.",
+            body,
+        )
+
+
+def _retry_context(
+    kind,
+    *,
+    disposition=RetryDisposition.CREATED,
+    source=WorkSource.RETRY,
+    execute_at="2026-11-21T14:35:00.000000Z",
+):
+    item = WorkItem(
+        work_id="retry-work",
+        submission_id="retry-submission",
+        account_id=ACCOUNT_ID,
+        action=WorkAction.REBALANCE,
+        source=source,
+        status=WorkStatus.PENDING,
+        execute_at=execute_at,
+        request_token_hash="0" * 64,
+        created_at="2026-11-20T20:52:10.000000Z",
+    )
+    return NotificationContext(
+        kind=kind,
+        retry_decision=RetryDecision(disposition=disposition, item=item),
+    )
 
 
 class NtfyNotifierTests(unittest.IsolatedAsyncioTestCase):

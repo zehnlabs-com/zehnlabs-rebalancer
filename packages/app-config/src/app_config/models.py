@@ -1,6 +1,8 @@
-"""Pydantic models for application configuration (PRD §5.1, CFG-1..2).
+"""Immutable application defaults.
 
-Every model is strict (`extra="forbid"`): unknown or removed keys fail startup.
+The dashboard release intentionally has no runtime configuration file.  These
+models are constructed directly by the composition root and injected into
+their consumers.
 """
 
 import re
@@ -14,7 +16,7 @@ DEFAULT_ALLOCATIONS_BASE_URL = "https://workers.fintech.zehnlabs.com/api/v1/stra
 class IBKRPortsConfig(BaseModel):
     """IBKR port configuration."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     live_internal: int = Field(
         default=4003, ge=1, le=65535,
@@ -29,7 +31,7 @@ class IBKRPortsConfig(BaseModel):
 class IBKRConfig(BaseModel):
     """IBKR connection configuration (PRD §5.1)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     request_timeout_seconds: float = Field(
         default=15.0, ge=1, le=120, description="Timeout for IBKR API requests"
@@ -61,7 +63,7 @@ class IBKRConfig(BaseModel):
 class TradingConfig(BaseModel):
     """Trading financial parameters (PRD §5.1)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     minimum_cash_reserve_percent: float = Field(
         default=0.25, ge=0, le=5,
@@ -90,30 +92,19 @@ class TradingConfig(BaseModel):
 
 
 class ServiceConfig(BaseModel):
-    """Background service timing and operational settings (PRD §5.1)."""
+    """Background recovery timing."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    heartbeat_interval_seconds: float = Field(default=1.0, ge=0.1, le=10)
-    manual_event_check_interval_seconds: float = Field(default=1.0, ge=0.1, le=10)
     error_recovery_delay_seconds: float = Field(default=5.0, ge=1.0, le=60)
-    manual_event_file_path: str = Field(
-        default="/app/data/manual-rebalance/rebalance.json",
-        description="File path watched for manual rebalance events",
-    )
 
 
 class SchedulerConfig(BaseModel):
     """Scheduler configuration (PRD §5.1)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    enabled: bool = Field(default=True)
     market_open_time: str = Field(default="09:35", description="HH:MM, ET")
-    scheduled_file_path: str = Field(
-        default="/app/data/market-open/scheduled.json",
-        description="JSON array of account-ID strings to rebalance at open",
-    )
 
     @field_validator("market_open_time")
     @classmethod
@@ -126,7 +117,7 @@ class SchedulerConfig(BaseModel):
 class ExecutorConfig(BaseModel):
     """Executor (process pool) configuration (PRD §5.1)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_workers: int = Field(default=32, ge=1, le=100)
 
@@ -134,7 +125,7 @@ class ExecutorConfig(BaseModel):
 class APIConfig(BaseModel):
     """External API configuration (PRD §5.1)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     rebalance_auth_timeout_seconds: int = Field(
         default=10, ge=1, le=120,
@@ -148,7 +139,7 @@ class APIConfig(BaseModel):
 class AppConfig(BaseModel):
     """Root application configuration (PRD §5.1)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     ibkr: IBKRConfig = Field(default_factory=IBKRConfig)
     trading: TradingConfig = Field(default_factory=TradingConfig)
