@@ -290,6 +290,8 @@ def _solve(
             msg=False,
             gapRel=0.0,
             gapAbs=0.0,
+            # The previous optimum remains feasible after its bound is added.
+            warmStart=getattr(problem, "solverModel", None) is not None,
             threads=1,
             timeLimit=optimization_timeout_seconds,
             parallel="off",

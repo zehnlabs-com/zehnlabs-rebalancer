@@ -24,6 +24,7 @@ complete, a buy-only model uses actual conservative cash, remaining holdings, fr
 quotes, and the same reserve. Preview follows the same shape with simulated sell
 proceeds.
 
+Each tie-break starts with the preceding stage's feasible solution.
 Every lexicographic stage must be proven optimal by both PuLP and native HiGHS.
 Timeouts, limits, unavailable solvers, numerical failures, unsafe coefficients, or
 failed result postconditions produce `OPTIMIZATION_FAILED` and no orders from that

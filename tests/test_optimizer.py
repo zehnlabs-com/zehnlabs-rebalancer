@@ -528,6 +528,14 @@ class TieAndDeterminismTests(unittest.TestCase):
         )
         self.assertEqual(forward, reverse)
 
+    def test_tie_break_solver_receives_preceding_solution(self):
+        with patch("rebalance_calculator.optimizer.pulp.HiGHS", wraps=pulp.HiGHS) as solver:
+            self.optimize({"A": 1.0}, {"A": Quote("A", bid=40.0, ask=40.0)})
+        self.assertEqual(
+            [call.kwargs.get("warmStart", False) for call in solver.call_args_list],
+            [False, True, True],
+        )
+
     def test_repeated_model_is_deterministic(self):
         targets = {"A": 0.5, "B": 0.5}
         quotes = {
