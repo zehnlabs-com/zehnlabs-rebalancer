@@ -138,17 +138,17 @@ The reference project may be stopped or deleted after distribution without affec
 or subscriber projects. Keeping it as a paper-only staging project will make future release tests
 easier.
 
-### Company ownership rather than one personal account
+### Template ownership
 
-The GHCR package, GitHub workflows, Railway template, and reference project should be owned by the
-Zehnlabs GitHub organization and a Zehnlabs Railway workspace. The Railway workspace should have at
-least two administrators. This prevents a personal account deletion or loss of access from making
-the template unmaintainable. Moving a Railway template between workspaces is not a routine edit, so
-ownership must be correct before distribution.
+The Railway template and reference project will be owned by the Zehnlabs owner's personal Railway
+workspace. Hobby is sufficient; Zehnlabs does not need a Pro account, organization workspace, or
+second Railway administrator for this deployment model.
 
-Railway currently requires Pro or Enterprise to create an organization workspace and add workspace
-members. Zehnlabs therefore needs a Pro authoring workspace for this ownership model. Subscribers
-still need only Hobby or higher for the two-volume deployment.
+The GHCR image and release workflow remain owned by the Zehnlabs GitHub organization. If the
+personal Railway account or template is deleted, existing subscriber projects continue to run, but
+the README button will stop working for new installations until a replacement template is created.
+Shared Railway ownership can be reconsidered later only if that continuity risk becomes worth the
+additional account tier.
 
 ### Direct template link, not marketplace publication
 
@@ -174,7 +174,7 @@ simple image rollback is supported.
 
 These actions require account ownership, secrets, billing authority, or a human approval:
 
-- create or select the Zehnlabs Railway workspace and add a second administrator;
+- create or select the owner's Railway workspace on Hobby;
 - connect the Zehnlabs GitHub organization to Railway if Railway asks for that connection;
 - enable GitHub Actions/package permissions and approve the protected `release` branch rules;
 - approve a protected GitHub release action if required-reviewer approval is configured;
@@ -218,8 +218,8 @@ Unmarked steps below are repository or validation work I perform after authoriza
 ### Phase 1: Prepare GitHub ownership and release controls
 
 1. **Owner:** Confirm that a public GHCR image is acceptable.
-2. **Owner:** Create or select a Zehnlabs Pro Railway workspace, add a second administrator, and
-   confirm that the intended template author is the company workspace rather than a personal one.
+2. **Owner:** Create or select the personal Railway workspace that will own the reference project
+   and template, and enable Hobby so the two required volumes can be tested.
 3. **Owner:** Confirm the GitHub repository is owned by `zehnlabs-com` and that the people who must
    maintain releases have organization access.
 4. **Owner:** Enable GitHub Actions and GitHub Packages for the repository if either is restricted.
@@ -232,8 +232,8 @@ Unmarked steps below are repository or validation work I perform after authoriza
 8. Create a disposable Railway service from a known public GHCR image and test whether Railway accepts a
    combined `tag@sha256:digest` source. Record whether the template must use that form or digest-only.
 
-Phase 1 is complete when an ordinary change cannot silently publish a stable image and loss of one
-personal account would not strand the package.
+Phase 1 is complete when an ordinary change cannot silently publish a stable image and the owner's
+Railway workspace is ready for the two-volume reference project.
 
 ### Phase 2: Add the image release workflow
 
@@ -276,7 +276,7 @@ later tests use that same manifest.
 
 ### Phase 4: Create the Railway reference project
 
-1. **Owner:** Create a paper-only project in the Zehnlabs Railway workspace. Do not reuse a live
+1. **Owner:** Create a paper-only project in the owner's Railway workspace. Do not reuse a live
    subscriber project.
 2. Add `rebalancer` from the exact candidate GHCR digest and `ibkr-gateway` from the exact approved
    Gateway reference in the contract below.
@@ -308,7 +308,7 @@ not waived because the VPS pilot passed.
 
 ### Phase 5: Create and test the template
 
-1. Generate a Railway template from the working reference project in the Zehnlabs workspace.
+1. Generate a Railway template from the working reference project in the owner's Railway workspace.
 2. Remove all reference-project secret values. Replace them with required subscriber inputs or the
    documented Railway-generated secret expression.
 3. Pin the Rebalancer candidate by digest and the Gateway by its approved tag and digest. Disable
@@ -339,7 +339,7 @@ no dependency on the reference project or a Zehnlabs registry credential.
    bytes already tested.
 4. Perform one final clean template deployment and compare its resolved manifest and selected
    platform image digests with the tested digests.
-5. **Owner:** Approve the template name, description, and shareable direct URL in the Zehnlabs
+5. **Owner:** Approve the template name, description, and shareable direct URL in the owner's
    Railway workspace. Keep the template unpublished from the marketplace.
 6. Record the permanent Railway template URL in this document.
 7. I add Railway's official Deploy on Railway button to the README using that exact URL, run the
@@ -352,10 +352,10 @@ Marketplace publication is not part of this release.
 
 ## Railway template contract
 
-Subscribers require Railway Hobby or higher because the stack needs two persistent volumes.
-Zehnlabs requires a Pro authoring workspace so the template has company ownership and at least two
-administrators. The template is a Railway-owned object; this repository document is its
-reproducible review contract.
+Subscribers require Railway Hobby or higher because the stack needs two persistent volumes. The
+Zehnlabs owner can create and maintain the template from a personal Hobby workspace; Pro is not
+required. The template is a Railway-owned object; this repository document is its reproducible
+review contract.
 
 ### Subscriber inputs
 
