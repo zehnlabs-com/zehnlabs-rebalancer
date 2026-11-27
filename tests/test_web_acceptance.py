@@ -460,7 +460,7 @@ class DashboardRouteAcceptanceTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertEqual(response.headers["x-frame-options"], "DENY")
-        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+        self.assertEqual(response.headers["referrer-policy"], "same-origin")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
         self.assertIn("camera=()", response.headers["permissions-policy"])
         self.assertNotIn("access-control-allow-origin", response.headers)

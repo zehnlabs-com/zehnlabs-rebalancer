@@ -67,7 +67,7 @@ def create_web_app(
         if "text/html" in content_type:
             response.headers["Content-Security-Policy"] = _CSP
             response.headers["X-Content-Type-Options"] = "nosniff"
-            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Referrer-Policy"] = "same-origin"
             response.headers["Permissions-Policy"] = (
                 "accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()"
             )

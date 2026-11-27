@@ -408,7 +408,11 @@ A live-trading confirmation must name the Account, Strategy, Replacement Set, ac
 - `GET` routes must never change durable state or invoke broker operations.
 - CORS is disabled. Use relative redirects; never construct a redirect from an unvalidated request host.
 - Apply login throttling by the normalized client address. When Railway's provided `RAILWAY_ENVIRONMENT_ID` is present, use Railway's documented `X-Real-IP` header. If that header is missing or invalid, use one fixed `railway-unknown-client` throttle identity; never fall back to `X-Forwarded-For`. Outside Railway, ignore all forwarded-client headers and use the socket peer address. Hash the chosen identity before storage. Five failures within 15 minutes block that identity for 15 minutes and return `429` with `Retry-After`. A successful login clears that identity's failure row.
-- Add a restrictive same-origin Content Security Policy, `frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and a restrictive `Permissions-Policy` to every HTML response.
+- Add a restrictive same-origin Content Security Policy, `frame-ancestors
+  'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, and
+  a restrictive `Permissions-Policy` to every HTML response. `same-origin` is
+  required so normal dashboard form submissions provide the `Referer` evidence
+  used by the CSRF origin check while cross-origin requests receive no referrer.
 - Do not log request bodies, cookies, authorization headers, CSRF values, passwords, API keys, or upstream response bodies. Production error pages must not contain tracebacks, environment values, SQL, or filesystem paths.
 
 ### 10.3 Trading safety
