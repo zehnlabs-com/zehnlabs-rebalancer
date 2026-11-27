@@ -294,6 +294,9 @@ def _solve(
             timeLimit=optimization_timeout_seconds,
             parallel="off",
             random_seed=0,
+            # Scale monetary bounds from ticks to near-dollar magnitude inside HiGHS.
+            # Its power-of-two scaling preserves whole-share integrality.
+            user_bound_scale=-MONEY_SCALE.bit_length(),
             mip_feasibility_tolerance=_SOLVER_FEASIBILITY_TOLERANCE,
             primal_feasibility_tolerance=_SOLVER_FEASIBILITY_TOLERANCE,
         )

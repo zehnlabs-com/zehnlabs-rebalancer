@@ -374,6 +374,17 @@ async def rebalance_account(
                     p.quantity * marks[p.symbol] for p in state0.positions
                 )
                 reserve = (cfg.trading.minimum_cash_reserve_percent / 100.0) * V0
+                record.V0 = V0
+                record.reserve = reserve
+                record.state0 = RecordedAccountState(
+                    cash=state0.cash,
+                    net_liquidation=state0.net_liquidation,
+                    positions=[
+                        RecordedPosition(symbol=p.symbol, quantity=p.quantity)
+                        for p in state0.positions
+                    ],
+                )
+                record.prices = _prices_record(q0, marks)
                 sell_plan = plan_sells(
                     state0.positions,
                     final_targets,
@@ -386,18 +397,6 @@ async def rebalance_account(
                 )
                 for n in sell_plan.notes:
                     notes.append(_note(n.level, n.text))
-                # REC-2: record the snapshot before the cross-check, so an
-                # ACCOUNT_DATA_MISMATCH failure keeps the data it was judged on.
-                record.V0 = V0
-                record.reserve = reserve
-                record.state0 = RecordedAccountState(
-                    cash=state0.cash,
-                    net_liquidation=state0.net_liquidation,
-                    positions=[
-                        RecordedPosition(symbol=p.symbol, quantity=p.quantity)
-                        for p in state0.positions
-                    ],
-                )
                 nlv = state0.net_liquidation
                 nlv_mismatch = (nlv > 0 and abs(V0 - nlv) / nlv > 0.02) or (nlv <= 0 and V0 > 0)
                 if nlv_mismatch:
@@ -428,6 +427,7 @@ async def rebalance_account(
                                               f"No sell reference for {order.symbol}")
                         proceeds += order.quantity * ref
                     cash_after = state0.cash + proceeds
+                    record.cash_base = cash_after
                     pos_after = _subtract_sells(
                         state0.positions,
                         [ExecutedOrder(symbol=o.symbol, side=o.side.value,
@@ -451,9 +451,7 @@ async def rebalance_account(
                     record.planned_sells = list(planned_sells)
                     record.planned_buys = list(planned_buys)
                     record.trimmed = _trimmed_symbols(buy_plan)
-                    record.cash_base = cash_after
                     record.V1 = buy_plan.total_value
-                    record.prices = _prices_record(q0, marks)
                     return finish(RunOutcome.PREVIEWED,
                                   value_end=V0, cash_end=cash_after)
 
@@ -536,6 +534,7 @@ async def rebalance_account(
                         ))
 
                 # ---- 16. buy plan --------------------------------------------- #
+                record.prices = _prices_record(q1, marks)
                 buy_plan = plan_buys(
                     positions_after,
                     final_targets,
@@ -562,7 +561,6 @@ async def rebalance_account(
                 # buy-leg failure keeps them (and the notification can say "BUY orders
                 # did not complete.").
                 planned_buys.extend(_plans_out(buy_plan.orders))
-                record.prices = _prices_record(q1, marks)
                 record.V1 = buy_plan.total_value
                 record.trimmed = _trimmed_symbols(buy_plan)
 
@@ -602,7 +600,6 @@ async def rebalance_account(
                 record.planned_buys = list(planned_buys)
                 record.trimmed = _trimmed_symbols(buy_plan)
                 record.V1 = buy_plan.total_value
-                record.prices = _prices_record(q1, marks)
                 record.executed = list(executed)
                 for order in executed:
                     adapter.info(

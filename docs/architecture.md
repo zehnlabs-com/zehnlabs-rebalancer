@@ -8,6 +8,8 @@ SQLite at `/app/state/rebalancer.db` stores Account configuration, Work submissi
 
 A Work submission is the durable identity of one dashboard form submission. Bulk Preview and initial-setup Work Items share that identity, while executor batches retain their separate Run `batch_id`. Initial onboarding completion also stores a durable receipt for the enabled Account configuration so replay cannot create a second initial batch after terminal Work history is pruned. Onboarding status itself remains derived from current Account rows.
 
+Workers capture Account state, reserve, and price evidence before invoking the whole-share planner. These inputs survive a solver failure in the typed Run record.
+
 The dashboard is always started. Missing Accounts or unavailable Gateway/Zehnlabs/Ably dependencies appear as onboarding or degraded readiness rather than terminating the web process. `/healthz` checks the responsive event loop and SQLite only.
 
 Signals execute through the same typed application services used by dashboard work. A Signal that collides with its Strategy's active Run keeps the established log-and-drop behavior. Durable dashboard/scheduled work instead finishes once with `STRATEGY_BUSY` and no broker call.

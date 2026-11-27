@@ -18,6 +18,8 @@ Zehnlabs does not receive brokerage credentials or operate subscriber deployment
 
 Railway requires Hobby or higher because this stack needs two persistent volumes. Railway Free is not supported.
 
+A failed planning Run retains the Account and price inputs collected before the failure. Review its stored evidence and broker activity before retrying.
+
 ## VPS installation
 
 1. Copy the example environment file and set `IB_USERNAME`, `IB_PASSWORD`, `ZEHNLABS_API_KEY`, `TRADING_MODE`, and a unique `DASHBOARD_ADMIN_PASSWORD`:

@@ -30,6 +30,33 @@ class ExactWholeShareExamples(unittest.TestCase):
             optimization_timeout_seconds=TIMEOUT,
         )
 
+    def test_tie_breaks_preserve_feasible_large_tick_portfolios(self):
+        # Expected allocations were independently enumerated in integer ticks.
+        cases = (
+            ((1170, 66), (55 / 117, 62 / 117), (769.71, 769.72, 282.13, 282.43),
+             1008635.96, 2521.5899, 0.5, (1175, 3597), 55351151),
+            ((1303, 1630), (32 / 55, 23 / 55), (1272.46, 1272.49, 852.96, 852.99),
+             10001113.84, 50005.5692, 0.5, (5919, 6352), 496157208),
+            ((1578, 1463), (84 / 149, 65 / 149), (84.30, 84.33, 556.12, 556.15),
+             100001113.84, 500005.5692, 0.5, (665908, 78752), 5050063058),
+            ((1757, 961), (0.025, 0.975), (477.85, 478.01, 540.76, 540.85),
+             10014053.57, 25035.133925, 0.2, (579, 20432), 220058211),
+        )
+        for held, weights, prices, cash, reserve, slippage, quantities, drift in cases:
+            with self.subTest(cash=cash):
+                result = _optimize_whole_shares(
+                    positions=(Position("A", held[0]), Position("B", held[1])),
+                    targets={"A": weights[0], "B": weights[1]},
+                    quotes={
+                        "A": Quote("A", bid=prices[0], ask=prices[1]),
+                        "B": Quote("B", bid=prices[2], ask=prices[3]),
+                    },
+                    cash=cash, reserve=reserve, slippage_pct=slippage, buy_only=False,
+                    optimization_timeout_seconds=TIMEOUT,
+                )
+                self.assertEqual(tuple(row.final_whole for row in result.symbols), quantities)
+                self.assertEqual(result.total_error_ticks, drift)
+
     def test_global_sell_decision_minimizes_portfolio_drift(self):
         result = _optimize_whole_shares(
             positions=(Position("A", 1), Position("B", 90)),

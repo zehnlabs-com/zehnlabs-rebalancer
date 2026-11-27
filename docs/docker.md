@@ -18,6 +18,8 @@ The dashboard is published only at `127.0.0.1:18778`. Gateway live, paper, and V
 
 Account configuration and management use the dashboard. Do not add bind mounts for `accounts.yaml`, `config.yaml`, or `data/`.
 
+The rebalancer image includes the whole-share solver. Rebuild that service when upgrading the planner and verify a paper Preview before submitting orders.
+
 ## Backups
 
 Stop `rebalancer` or use SQLite's online backup operation from a trusted maintenance environment; do not copy a live database file blindly. Back up `rebalancer_state` and `ib_settings` separately. Take both backups before application or Gateway upgrades and verify restores in paper mode.

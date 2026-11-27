@@ -9,6 +9,9 @@ buys and sells change only whole shares.
 Cash feasibility uses conservative prices: sell references in the initial model
 and buy limits in both models. The fixed reserve from the start-of-run value remains
 outside strategy capital. Money coefficients use integer $0.0001 ticks.
+HiGHS scales its internal bounds by a power of two near the tick-to-dollar
+conversion. This keeps large monetary bounds numerically tractable across
+the optimization stages while preserving the discrete share units.
 
 Ties are resolved without accepting greater total drift: first minimize total drift,
 then each symbol's drift in target-weight-descending and symbol-ascending order,

@@ -276,6 +276,10 @@ class OptimizedExecutionShapeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.outcome, RunOutcome.FAILED)
         self.assertEqual(result.failure_reason, FailureReason.OPTIMIZATION_FAILED)
         self.assertEqual(conn.placed, [])
+        self.assertEqual(result.record.state0.net_liquidation, self.state.net_liquidation)
+        self.assertEqual(result.record.V0, 1000.0)
+        self.assertEqual(result.record.reserve, 2.5)
+        self.assertEqual(result.record.prices["A"].bid, self.quotes["A"].bid)
 
     async def test_preview_buy_optimization_failure_places_no_orders(self):
         conn = FakeBrokerConnection(state=self.state, quotes=self.quotes)
@@ -292,6 +296,7 @@ class OptimizedExecutionShapeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.outcome, RunOutcome.FAILED)
         self.assertEqual(result.failure_reason, FailureReason.OPTIMIZATION_FAILED)
         self.assertEqual(conn.placed, [])
+        self.assertEqual(result.record.cash_base, 100.0)
         self.assertEqual([(order.symbol, order.quantity) for order in result.planned_sells], [("A", 1)])
         self.assertEqual(result.planned_buys, [])
 
@@ -479,7 +484,7 @@ class ReserveAwareIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(result.outcome, RunOutcome.FAILED)
             self.assertEqual(result.failure_reason, FailureReason.OPTIMIZATION_FAILED)
-            self.assertIsNone(result.record.reserve)
+            self.assertEqual(result.record.reserve, 50.0)
             self.assertIsNone(result.record.cash_base)
             self.assertIsNone(result.record.V1)
             self.assertEqual(conn.placed, [])

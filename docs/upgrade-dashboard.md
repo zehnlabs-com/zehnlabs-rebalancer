@@ -11,6 +11,6 @@ This is a breaking state-interface migration.
 7. Review old pending schedules and recreate only intended work in the dashboard.
 8. Do not replay a legacy manual-request file: whether it executed is ambiguous.
 9. Keep legacy JSONL Run files unchanged in the pre-upgrade backup for their remaining retention period; they are not imported.
-10. Complete the paper acceptance and restore drill before live activation.
+10. Complete the paper acceptance and restore drill before live activation. Include a transition between Strategies that requires whole-share sells and buys. Compare the execution quantities and cash reserve against the stored Run.
 
 Never let the stopped old deployment and new deployment trade the same Account simultaneously. Rollback means stopping the new stack, confirming no broker work is active, restoring the complete old deployment and volumes, and re-verifying in paper mode.
