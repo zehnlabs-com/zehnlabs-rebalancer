@@ -320,7 +320,7 @@ def _solve(
     except OptimizationError:
         raise
     except Exception as exc:  # noqa: BLE001 - every solver failure fails closed
-        raise OptimizationError(f"HiGHS solve failed: {type(exc).__name__}: {exc}") from exc
+        raise OptimizationError("HiGHS solve failed unexpectedly.") from exc
 
 
 def _integer_value(variable: pulp.LpVariable, name: str) -> int:

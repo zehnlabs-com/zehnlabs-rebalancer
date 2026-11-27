@@ -1,6 +1,7 @@
 """WP4 acceptance tests: IBKRConnection against a mocked ib_async.IB (PRD §9)."""
 
 import asyncio
+import logging
 import unittest
 from types import SimpleNamespace as NS
 from unittest.mock import patch
@@ -156,6 +157,24 @@ def make_conn(fake, account_values=None, raw_positions=None, manage=False):
 
 
 class ConnectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disconnect_failure_does_not_log_exception_text(self):
+        secret = "raw-gateway-secret"
+        logger = logging.getLogger("test_ibkr_safe_logging")
+
+        class FailingDisconnectIB(FakeIB):
+            def disconnect(self):
+                raise RuntimeError(secret)
+
+        conn = IBKRConnection("U123456", 42, TEST_CFG, SETTINGS, logger=logger)
+        conn._ib = FailingDisconnectIB()
+
+        with self.assertLogs(logger.name, level="WARNING") as captured:
+            await conn.close()
+
+        output = "\n".join(captured.output)
+        self.assertNotIn(secret, output)
+        self.assertIn("RuntimeError", output)
+
     async def test_connect_args_and_fetchfields(self):
         fake = FakeIB()
         with patch.object(module, "IB", return_value=fake):

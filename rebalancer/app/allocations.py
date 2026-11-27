@@ -113,9 +113,19 @@ class AllocationsClient:
             if symbol is None:
                 symbol = item.get("symbol")
             allocation = item.get("allocation")
+            if isinstance(allocation, bool):
+                raise AllocationsUnavailable(
+                    f"Allocations API unavailable for {strategy} (invalid response)"
+                )
+            try:
+                weight = float(allocation) if allocation is not None else None
+            except (TypeError, ValueError):
+                raise AllocationsUnavailable(
+                    f"Allocations API unavailable for {strategy} (invalid response)"
+                ) from None
             result.append(RawAllocation(
                 symbol=symbol,
-                weight=float(allocation) if allocation is not None else None,
+                weight=weight,
             ))
         return result
 

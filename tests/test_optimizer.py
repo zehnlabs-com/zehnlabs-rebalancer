@@ -608,8 +608,11 @@ class SolverFailureTests(unittest.TestCase):
         problem.solve.side_effect = RuntimeError("solver exploded")
         with patch("rebalance_calculator.optimizer.pulp.HiGHS") as highs:
             highs.return_value.available.return_value = True
-            with self.assertRaisesRegex(OptimizationError, "solver exploded"):
+            with self.assertRaisesRegex(
+                OptimizationError, "HiGHS solve failed unexpectedly"
+            ) as raised:
                 _solve(problem, TIMEOUT)
+        self.assertNotIn("solver exploded", str(raised.exception))
 
     def test_solver_status_inspection_exception_is_an_optimization_error(self):
         problem = self.fake_problem(
@@ -620,8 +623,11 @@ class SolverFailureTests(unittest.TestCase):
         )
         with patch("rebalance_calculator.optimizer.pulp.HiGHS") as highs:
             highs.return_value.available.return_value = True
-            with self.assertRaisesRegex(OptimizationError, "status read failed"):
+            with self.assertRaisesRegex(
+                OptimizationError, "HiGHS solve failed unexpectedly"
+            ) as raised:
                 _solve(problem, TIMEOUT)
+        self.assertNotIn("status read failed", str(raised.exception))
 
 
 class ResultSafetyTests(unittest.TestCase):

@@ -262,7 +262,11 @@ class StrategyExecutor:
                 raise ValueError("worker result IDs did not match submitted Runs")
             return [by_id[start.run_id] for start in starts]
         except Exception as exc:
-            self.logger.error("Malformed worker results for Strategy %s: %s", strategy, exc)
+            self.logger.error(
+                "Malformed worker results for Strategy %s (%s)",
+                strategy,
+                type(exc).__name__,
+            )
             return [
                 self.static_result(
                     start,
@@ -322,7 +326,11 @@ class StrategyExecutor:
                 self.notification_context(result, retry_decision=decision),
             )
         except Exception as exc:
-            self.logger.error("Notification failed for Run %s: %s", result.run_id, exc)
+            self.logger.error(
+                "Notification failed for Run %s (%s)",
+                result.run_id,
+                type(exc).__name__,
+            )
 
     def notification_context(
         self,
@@ -365,7 +373,10 @@ class StrategyExecutor:
     def record_storage_failure(self, exc: BaseException) -> None:
         self.accepting = False
         self.critical_storage_error = "Critical storage error; trading requests are disabled."
-        self.logger.critical("Terminal Run persistence failed: %s", exc)
+        self.logger.critical(
+            "Terminal Run persistence failed (%s)",
+            type(exc).__name__,
+        )
 
     def stop_accepting(self) -> None:
         self.accepting = False
@@ -375,4 +386,7 @@ class StrategyExecutor:
         try:
             self._pool.shutdown(wait=True, cancel_futures=True)
         except Exception as exc:
-            self.logger.error("Error during worker-pool cleanup: %s", exc)
+            self.logger.error(
+                "Error during worker-pool cleanup (%s)",
+                type(exc).__name__,
+            )

@@ -300,8 +300,11 @@ class NtfyNotifier(Notifier):
         try:
             await self._post(message)
         except Exception as exc:  # noqa: BLE001 - NTF-3: failures are logged, never raised
-            self._log.error("Failed to send notification for %s: %s",
-                            result.account_id, exc)
+            self._log.error(
+                "Failed to send notification for %s (%s)",
+                result.account_id,
+                type(exc).__name__,
+            )
 
     async def _post(self, message: Message) -> None:
         url = f"{_NTFY_URL}/{self._channel}"
@@ -316,5 +319,4 @@ class NtfyNotifier(Notifier):
                 url, data=message.body.encode("utf-8"), headers=headers
             ) as response:
                 if response.status != 200:
-                    self._log.error("ntfy returned HTTP %s for %s",
-                                    response.status, url)
+                    self._log.error("ntfy returned HTTP %s", response.status)

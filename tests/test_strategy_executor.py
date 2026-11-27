@@ -4,7 +4,6 @@ import asyncio
 import logging
 import tempfile
 import unittest
-from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -35,7 +34,7 @@ from app.state.models import (
     WorkStatus,
 )
 from app.state.sqlite import SQLiteState, StateError
-from fakes import FakeClock, RecordingNotifier
+from fakes import FakeClock, RecordingNotifier, RecordingPool
 
 
 ACCOUNT = AccountConfig(
@@ -50,32 +49,6 @@ ACCOUNT_TWO = AccountConfig(
     enabled=True,
     strategy_name="strategy-one",
 )
-
-
-class RecordingPool:
-    def __init__(self):
-        self.submissions = []
-        self.shutdown_args = None
-        self.deferred = False
-        self.future = None
-        self.submitted = None
-
-    def submit(self, function, *args, **kwargs):
-        self.submissions.append((function, args, kwargs))
-        future = Future()
-        if self.deferred:
-            self.future = future
-            if self.submitted is not None:
-                self.submitted.set()
-            return future
-        try:
-            future.set_result(function(*args, **kwargs))
-        except BaseException as exc:
-            future.set_exception(exc)
-        return future
-
-    def shutdown(self, wait=True, cancel_futures=False):
-        self.shutdown_args = (wait, cancel_futures)
 
 
 def result_for(request) -> AccountRunResult:
@@ -241,7 +214,7 @@ class StrategyExecutorTests(unittest.IsolatedAsyncioTestCase):
         def fake_batch(strategy, requests, config, settings):
             return [result_for(request).model_dump(mode="json") for request in requests]
 
-        with patch.object(
+        with self.assertLogs("test_strategy_executor", level="ERROR") as captured, patch.object(
             executor_module, "execute_strategy_batch", side_effect=fake_batch
         ):
             batch = await self.executor.execute(
@@ -256,6 +229,36 @@ class StrategyExecutorTests(unittest.IsolatedAsyncioTestCase):
             batch.results[0].failure_reason,
             FailureReason.INTERNAL_ERROR,
         )
+        output = "\n".join(captured.output)
+        self.assertNotIn("worker returned an untyped result", output)
+        self.assertIn("TypeError", output)
+
+    async def test_fallback_failures_do_not_log_exception_text(self):
+        secret = "raw-internal-secret"
+
+        class FailingNotifier:
+            async def send(self, result, context):
+                raise RuntimeError(secret)
+
+        class FailingPool:
+            def shutdown(self, *, wait, cancel_futures):
+                raise RuntimeError(secret)
+
+        start = self.executor.build_starts(
+            [ACCOUNT], RunMode.PREVIEW, RunSource.DASHBOARD
+        )[0]
+        result = self.executor.static_result(start, RunOutcome.PREVIEWED)
+        self.executor.notifier = FailingNotifier()
+
+        with self.assertLogs("test_strategy_executor", level="ERROR") as captured:
+            await self.executor.postprocess(result)
+            self.executor.record_storage_failure(RuntimeError(secret))
+            self.executor._pool = FailingPool()
+            self.executor.cleanup()
+
+        output = "\n".join(captured.output)
+        self.assertNotIn(secret, output)
+        self.assertEqual(output.count("RuntimeError"), 3)
 
     async def test_busy_signal_is_dropped_without_run_or_worker(self):
         self.executor.running.add(ACCOUNT.strategy_name)

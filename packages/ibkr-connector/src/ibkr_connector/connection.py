@@ -158,7 +158,10 @@ class IBKRConnection(BrokerConnection):
             try:
                 ib.disconnect()
             except Exception as exc:  # noqa: BLE001 - close never raises outward
-                self._log.warning("Error disconnecting from IBKR Gateway: %s", exc)
+                self._log.warning(
+                    "Error disconnecting from IBKR Gateway (%s)",
+                    type(exc).__name__,
+                )
 
     # ------------------------------------------------------------------ #
     async def account_state(self) -> AccountState:

@@ -1,12 +1,14 @@
 """WP6 acceptance tests: rebalance_account with fakes (PRD §8)."""
 
+import io
 import logging
 import sys
 import unittest
-from unittest.mock import patch
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import sys as _sys
 
@@ -25,13 +27,25 @@ from broker_connector_base import (  # noqa: E402
 from rebalance_calculator import OptimizationError  # noqa: E402
 
 from app.accounts import AccountConfig  # noqa: E402
-from app.rebalance import rebalance_account as _rebalance_account, RunDeps  # noqa: E402
-from app.results import INTERNAL_ERROR_MESSAGE, FailureReason, RunMode, RunOutcome, RunSource  # noqa: E402
+from app.allocations import AllocationsUnavailable  # noqa: E402
+from app.rebalance import (  # noqa: E402
+    UNEXPECTED_ORDER_PLACEMENT_MESSAGE,
+    RunDeps,
+    rebalance_account as _rebalance_account,
+)
+from app.results import (  # noqa: E402
+    INTERNAL_ERROR_MESSAGE,
+    FailureReason,
+    RunMode,
+    RunOutcome,
+    RunSource,
+)
 from app.services.notification_service import (  # noqa: E402
     NotificationContext,
     NotificationKind,
     render,
 )
+from app.settings import RuntimeSettings  # noqa: E402
 
 from fakes import FakeAllocations, FakeBrokerConnection, FakeClock  # noqa: E402
 
@@ -106,6 +120,22 @@ def make_deps(conn, clock, allocs=None, app_config=None):
 
 def open_clock(hour=10):
     return FakeClock(datetime(2026, 11, 20, hour, 0))
+
+
+@contextmanager
+def capture_worker_logs():
+    from app.services import trading_executor as te
+
+    handler = te._worker_logger.handlers[0]
+    buffer = io.StringIO()
+    old_stream = handler.setStream(buffer)
+    old_level = te._worker_logger.level
+    te._worker_logger.setLevel(logging.ERROR)
+    try:
+        yield te, buffer
+    finally:
+        handler.setStream(old_stream)
+        te._worker_logger.setLevel(old_level)
 
 
 class HappyPathTests(unittest.IsolatedAsyncioTestCase):
@@ -542,10 +572,11 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
 class OrderFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_sell_rejected_means_no_buys_and_what_happened_lists_fills(self):
         fills = dict(FILLS)
-        fills["XLE"] = ("reject", "why not")
+        fills["XLE"] = ("reject", "synthetic-secret")
         conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=fills)
         result = await rebalance_account(ACCOUNT, "live", "signal", make_deps(conn, open_clock()))
         self.assertEqual(result.failure_reason, FailureReason.ORDERS_FAILED)
+        self.assertNotIn("synthetic-secret", result.model_dump_json())
         self.assertEqual(len(conn.placed), 1)  # only the sell was placed
         self.assertEqual(len(result.executed), 1)
         self.assertEqual(result.executed[0].status, "REJECTED")
@@ -572,7 +603,109 @@ class CashTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.record.cash_base, 2500.0)
 
 
+class PlacementErrorSanitizationTests(unittest.IsolatedAsyncioTestCase):
+    async def _assert_safe(self, *, fail_on: Side) -> None:
+        conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
+        original_place = conn.place
+
+        async def place(order):
+            if order.side == fail_on:
+                raise RuntimeError("synthetic-secret")
+            return await original_place(order)
+
+        conn.place = place
+        with self.assertLogs("test_rebalance", level="ERROR") as captured:
+            result = await rebalance_account(
+                ACCOUNT, "live", "signal", make_deps(conn, open_clock())
+            )
+
+        self.assertEqual(result.failure_reason, FailureReason.ORDER_PLACEMENT_FAILED)
+        self.assertEqual(result.error_message, UNEXPECTED_ORDER_PLACEMENT_MESSAGE)
+        self.assertNotIn("synthetic-secret", result.model_dump_json())
+        self.assertNotIn("synthetic-secret", "\n".join(captured.output))
+
+    async def test_unexpected_sell_placement_error_is_safe(self):
+        await self._assert_safe(fail_on=Side.SELL)
+
+    async def test_unexpected_buy_placement_error_is_safe(self):
+        await self._assert_safe(fail_on=Side.BUY)
+
+
 class InternalErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_allocation_symbol_is_not_exposed(self):
+        secret = "synthetic-secret"
+        conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
+        allocations = FakeAllocations({ACCOUNT.strategy_name: {secret: 1.0}})
+
+        with self.assertLogs("test_rebalance", level="INFO") as captured:
+            result = await rebalance_account(
+                ACCOUNT,
+                "live",
+                "signal",
+                make_deps(conn, open_clock(), allocs=allocations),
+            )
+
+        self.assertEqual(result.failure_reason, FailureReason.TARGETS_INVALID)
+        self.assertEqual(result.error_message, "Strategy contains an invalid symbol.")
+        self.assertNotIn(secret, result.model_dump_json())
+        self.assertNotIn(secret, "\n".join(captured.output))
+
+    async def test_non_string_allocation_symbol_is_a_target_validation_failure(self):
+        conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
+        allocations = FakeAllocations({ACCOUNT.strategy_name: {123: 1.0}})
+
+        result = await rebalance_account(
+            ACCOUNT,
+            "live",
+            "signal",
+            make_deps(conn, open_clock(), allocs=allocations),
+        )
+
+        self.assertEqual(result.failure_reason, FailureReason.TARGETS_INVALID)
+        self.assertEqual(result.error_message, "Strategy contains an invalid symbol.")
+
+    async def test_expected_allocation_failure_remains_specific(self):
+        conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
+        allocations = FakeAllocations(dict(ALLOCS))
+
+        async def unavailable(strategy):
+            raise AllocationsUnavailable("Allocations are temporarily unavailable.")
+
+        allocations.fetch = unavailable
+        result = await rebalance_account(
+            ACCOUNT,
+            "live",
+            "signal",
+            make_deps(conn, open_clock(), allocs=allocations),
+        )
+
+        self.assertEqual(result.failure_reason, FailureReason.ALLOCATIONS_UNAVAILABLE)
+        self.assertEqual(
+            result.error_message,
+            "Allocations are temporarily unavailable.",
+        )
+
+    async def test_unexpected_allocation_failure_is_safe(self):
+        conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
+        allocations = FakeAllocations(dict(ALLOCS))
+
+        async def boom(strategy):
+            raise RuntimeError("synthetic-secret")
+
+        allocations.fetch = boom
+        with self.assertLogs("test_rebalance", level="ERROR") as captured:
+            result = await rebalance_account(
+                ACCOUNT,
+                "live",
+                "signal",
+                make_deps(conn, open_clock(), allocs=allocations),
+            )
+
+        self.assertEqual(result.failure_reason, FailureReason.INTERNAL_ERROR)
+        self.assertEqual(result.error_message, INTERNAL_ERROR_MESSAGE)
+        self.assertNotIn("synthetic-secret", result.model_dump_json())
+        self.assertNotIn("synthetic-secret", "\n".join(captured.output))
+
     async def test_unexpected_exception_becomes_internal_error_and_never_raises(self):
         conn = FakeBrokerConnection(state=STATE, quotes=QUOTES, fill=FILLS)
 
@@ -589,18 +722,55 @@ class InternalErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("synthetic-secret", result.model_dump_json())
         self.assertNotIn("synthetic-secret", "\n".join(captured.output))
 
-    def test_worker_level_internal_error_is_safe(self):
-        from app.services.trading_executor import WorkerRunRequest, _internal_error_result
+    async def test_per_account_worker_failure_is_safe_in_result_and_log(self):
+        from app.services.trading_executor import WorkerRunRequest
 
-        result = _internal_error_result(
-            WorkerRunRequest(ACCOUNT, "safe-error-run", RunMode.LIVE, RunSource.SIGNAL),
-            RunMode.LIVE,
-            RunSource.SIGNAL,
-            RuntimeError("synthetic-secret"),
+        request = WorkerRunRequest(
+            ACCOUNT, "safe-account-error", RunMode.LIVE, RunSource.SIGNAL
         )
+        settings = RuntimeSettings(
+            dashboard_admin_password="safe-dashboard-password-123",
+            trading_mode="paper",
+            zehnlabs_api_key="synthetic-key",
+        ).for_worker()
+        with capture_worker_logs() as (te, buffer), patch.object(
+            te,
+            "AllocationsClient",
+            return_value=FakeAllocations(dict(ALLOCS)),
+        ), patch.object(
+            te,
+            "rebalance_account",
+            side_effect=RuntimeError("synthetic-secret"),
+        ):
+            results = await te._run_batch("strategy-one", [request], cfg(), settings)
 
-        self.assertEqual(result.error_message, INTERNAL_ERROR_MESSAGE)
-        self.assertNotIn("synthetic-secret", result.model_dump_json())
+        self.assertEqual(results[0].error_message, INTERNAL_ERROR_MESSAGE)
+        self.assertNotIn("synthetic-secret", results[0].model_dump_json())
+        self.assertNotIn("synthetic-secret", buffer.getvalue())
+
+    def test_batch_worker_failure_is_safe_in_result_and_log(self):
+        from app.services.trading_executor import WorkerRunRequest
+
+        request = WorkerRunRequest(
+            ACCOUNT, "safe-batch-error", RunMode.LIVE, RunSource.SIGNAL
+        )
+        settings = RuntimeSettings(
+            dashboard_admin_password="safe-dashboard-password-123",
+            trading_mode="paper",
+            zehnlabs_api_key="synthetic-key",
+        ).for_worker()
+        with capture_worker_logs() as (te, buffer), patch.object(
+            te,
+            "_run_batch",
+            side_effect=RuntimeError("synthetic-secret"),
+        ):
+            results = te.execute_strategy_batch(
+                "strategy-one", [request], cfg(), settings
+            )
+
+        self.assertEqual(results[0].error_message, INTERNAL_ERROR_MESSAGE)
+        self.assertNotIn("synthetic-secret", results[0].model_dump_json())
+        self.assertNotIn("synthetic-secret", buffer.getvalue())
 
 
 if __name__ == "__main__":

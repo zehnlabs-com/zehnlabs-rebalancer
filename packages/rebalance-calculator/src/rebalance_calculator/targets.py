@@ -37,20 +37,22 @@ def validate_and_scale(raw: Sequence[RawAllocation]) -> Targets:
     for alloc in raw:
         symbol = alloc.symbol
         weight = alloc.weight
-        if symbol is None or str(symbol).strip() == "":
+        if symbol is None or (isinstance(symbol, str) and symbol.strip() == ""):
             raise InvalidTargetsError(
                 "Strategy lists an allocation with a missing or empty symbol."
             )
+        if not isinstance(symbol, str):
+            raise InvalidTargetsError("Strategy contains an invalid symbol.")
         s = symbol.strip().upper()
         if not _SYMBOL_RE.fullmatch(s):
-            raise InvalidTargetsError(f"Strategy symbol {s!r} is invalid.")
+            raise InvalidTargetsError("Strategy contains an invalid symbol.")
         if s in seen:
-            raise InvalidTargetsError(f"Strategy lists {s} twice.")
+            raise InvalidTargetsError("Strategy contains a duplicate symbol.")
         if weight is None or isinstance(weight, bool) \
                 or not isinstance(weight, (int, float)) or not _is_finite(weight) \
                 or weight < 0:
             raise InvalidTargetsError(
-                f"Strategy weight for {s} is missing, not a finite number, or negative."
+                "Strategy contains a missing, non-finite, or negative weight."
             )
         seen.add(s)
         normalized.append((s, float(weight)))

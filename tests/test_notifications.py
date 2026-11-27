@@ -321,3 +321,58 @@ class NtfyNotifierTests(unittest.IsolatedAsyncioTestCase):
             await notifier.send(base_result(), NotificationContext(kind=NotificationKind.SUCCESS))
         self.assertEqual(FakeSession.last["timeout"].total, 10)
         self.assertGreater(len(FakeSession.last), 0)
+
+    async def test_notification_failure_does_not_log_exception_or_topic(self):
+        notifier = NtfyNotifier(
+            enabled=True,
+            channel="synthetic-secret-topic",
+            logger=logging.getLogger("test_ntfy_exception"),
+        )
+        with patch.object(
+            notifier,
+            "_post",
+            side_effect=RuntimeError("synthetic-secret-topic"),
+        ), self.assertLogs("test_ntfy_exception", level="ERROR") as captured:
+            await notifier.send(
+                base_result(), NotificationContext(kind=NotificationKind.SUCCESS)
+            )
+
+        self.assertNotIn("synthetic-secret-topic", "\n".join(captured.output))
+
+    async def test_non_200_response_does_not_log_topic_url(self):
+        class FakeResponse:
+            status = 503
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def post(self, url, **kwargs):
+                return FakeResponse()
+
+        notifier = NtfyNotifier(
+            enabled=True,
+            channel="synthetic-secret-topic",
+            logger=logging.getLogger("test_ntfy_status"),
+        )
+        with patch(
+            "app.services.notification_service.aiohttp.ClientSession",
+            FakeSession,
+        ), self.assertLogs("test_ntfy_status", level="ERROR") as captured:
+            await notifier.send(
+                base_result(), NotificationContext(kind=NotificationKind.SUCCESS)
+            )
+
+        self.assertNotIn("synthetic-secret-topic", "\n".join(captured.output))

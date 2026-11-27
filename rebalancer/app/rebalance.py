@@ -42,7 +42,7 @@ from rebalance_calculator import (
 from app_config import AppConfig
 
 from .accounts import AccountConfig
-from .allocations import AllocationsClient
+from .allocations import AllocationsClient, AllocationsUnavailable
 from .market_clock import MarketClock
 from .results import (
     AccountRunResult,
@@ -63,6 +63,9 @@ from .settings import RuntimeSettings
 
 ET = ZoneInfo("America/New_York")
 EPS = 1e-9
+UNEXPECTED_ORDER_PLACEMENT_MESSAGE = (
+    "An unexpected broker error occurred while placing orders."
+)
 
 _SOURCE_PHRASE = {
     "last": "last trade",
@@ -137,7 +140,6 @@ async def _wait_for_orders(
             if bad:
                 listing = ", ".join(
                     f"{s.side.value} {int(s.quantity)} {s.symbol}: {s.status.value}"
-                    + (f" — {s.message}" if s.message else "")
                     for s in bad
                 )
                 raise _RunFailed(FailureReason.ORDERS_FAILED, listing)
@@ -273,7 +275,7 @@ async def rebalance_account(
         # ---- 2. allocations ------------------------------------------------ #
         try:
             raw_allocs: list[RawAllocation] = await deps.allocations.fetch(account.strategy_name)
-        except Exception as exc:  # noqa: BLE001 - AllocationsUnavailable etc.
+        except AllocationsUnavailable as exc:
             return await fail(FailureReason.ALLOCATIONS_UNAVAILABLE, str(exc))
 
         # ---- 3. validate + scale + replacements --------------------------- #
@@ -471,9 +473,13 @@ async def rebalance_account(
                     except OrderPlacementError as exc:
                         return await fail(FailureReason.ORDER_PLACEMENT_FAILED, str(exc))
                     except Exception as exc:  # noqa: BLE001 - any transport error = placement failure
+                        adapter.error(
+                            "unexpected sell order placement error (%s)",
+                            type(exc).__name__,
+                        )
                         return await fail(
                             FailureReason.ORDER_PLACEMENT_FAILED,
-                            f"Order placement failed: {type(exc).__name__}: {exc}",
+                            UNEXPECTED_ORDER_PLACEMENT_MESSAGE,
                         )
                     try:
                         await _wait_for_orders(conn, placed, deps, adapter)
@@ -582,9 +588,13 @@ async def rebalance_account(
                     except OrderPlacementError as exc:
                         return await fail(FailureReason.ORDER_PLACEMENT_FAILED, str(exc))
                     except Exception as exc:  # noqa: BLE001 - any transport error = placement failure
+                        adapter.error(
+                            "unexpected buy order placement error (%s)",
+                            type(exc).__name__,
+                        )
                         return await fail(
                             FailureReason.ORDER_PLACEMENT_FAILED,
-                            f"Order placement failed: {type(exc).__name__}: {exc}",
+                            UNEXPECTED_ORDER_PLACEMENT_MESSAGE,
                         )
                     try:
                         await _wait_for_orders(conn, placed, deps, adapter)

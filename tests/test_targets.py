@@ -39,8 +39,9 @@ class ValidateTests(unittest.TestCase):
 
     def test_A8_duplicate_normalised_invalid(self):
         with self.assertRaises(InvalidTargetsError) as ctx:
-            validate_and_scale(alloc(("SPY", 0.5), ("spy", 0.5)))
-        self.assertIn("twice", str(ctx.exception))
+            validate_and_scale(alloc(("SECRET", 0.5), ("secret", 0.5)))
+        self.assertEqual(str(ctx.exception), "Strategy contains a duplicate symbol.")
+        self.assertNotIn("SECRET", str(ctx.exception))
 
     def test_A9_negative_weight_invalid(self):
         with self.assertRaises(InvalidTargetsError):
@@ -52,8 +53,24 @@ class ValidateTests(unittest.TestCase):
         self.assertEqual(t.notes[0].text, "Strategy has no allocations: selling all positions.")
 
     def test_missing_weight_invalid(self):
-        with self.assertRaises(InvalidTargetsError):
-            validate_and_scale([RawAllocation("SPY", None)])
+        with self.assertRaises(InvalidTargetsError) as ctx:
+            validate_and_scale([RawAllocation("SECRET", None)])
+        self.assertEqual(
+            str(ctx.exception),
+            "Strategy contains a missing, non-finite, or negative weight.",
+        )
+        self.assertNotIn("SECRET", str(ctx.exception))
+
+    def test_invalid_symbol_is_not_echoed(self):
+        with self.assertRaises(InvalidTargetsError) as ctx:
+            validate_and_scale([RawAllocation("synthetic-secret", 1.0)])
+        self.assertEqual(str(ctx.exception), "Strategy contains an invalid symbol.")
+        self.assertNotIn("synthetic-secret", str(ctx.exception))
+
+    def test_non_string_symbol_is_invalid(self):
+        with self.assertRaises(InvalidTargetsError) as ctx:
+            validate_and_scale([RawAllocation(123, 1.0)])
+        self.assertEqual(str(ctx.exception), "Strategy contains an invalid symbol.")
 
     def test_weight_zero_dropped_from_targets(self):
         t = validate_and_scale(alloc(("SPY", 1.0), ("GLD", 0.0)))

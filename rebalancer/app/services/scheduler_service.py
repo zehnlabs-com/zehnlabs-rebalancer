@@ -88,7 +88,7 @@ class SchedulerService:
         try:
             await self.work_manager.dispatch_due()
         except Exception as exc:
-            self.logger.error("Pending Work dispatch failed: %s", exc)
+            self.logger.error("Pending Work dispatch failed (%s)", type(exc).__name__)
         finally:
             try:
                 self.recalculate()

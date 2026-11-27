@@ -87,7 +87,6 @@ def _internal_error_result(
     request: WorkerRunRequest,
     mode: RunMode,
     source: RunSource,
-    _exc: BaseException,
 ) -> AccountRunResult:
     """A minimal FAILED/INTERNAL_ERROR result for a worker-level exception."""
     account = request.account
@@ -167,7 +166,7 @@ async def _run_batch(
                 account.account_id,
                 type(res).__name__,
             )
-            finalized.append(_internal_error_result(request, request.mode, request.source, res))
+            finalized.append(_internal_error_result(request, request.mode, request.source))
         else:
             finalized.append(res)
     return finalized
@@ -200,6 +199,6 @@ def execute_strategy_batch(
     except BaseException as exc:  # noqa: BLE001 - never raise from the worker
         _worker_logger.error("worker batch failed for %s (%s)", strategy, type(exc).__name__)
         return [
-            _internal_error_result(request, request.mode, request.source, exc)
+            _internal_error_result(request, request.mode, request.source)
             for request in requests
         ]

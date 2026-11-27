@@ -52,7 +52,7 @@ See [Docker operations](docs/docker.md) for backups, upgrades, and multi-instanc
 
 The reviewed Railway template contract is documented in [Railway deployment](docs/railway.md). It creates exactly two one-replica services and two volumes, exposes only the dashboard through HTTPS, and uses private networking for Gateway access.
 
-The public Deploy to Railway button is intentionally withheld until the external paper pilot and restore drill in [Paper acceptance](docs/paper-acceptance.md) pass. Publishing a button before those gates pass would present an unverified trading deployment as supported.
+The public Deploy to Railway button is intentionally withheld until the actual Railway project and its backup/restore procedure pass the remaining checks in [Paper acceptance](docs/paper-acceptance.md). The production-image VPS paper pilot has passed; Railway itself has not yet been verified.
 
 After any Railway variable change, click **Deploy** to apply the staged change. A `TRADING_MODE` change must redeploy both services from the same shared template input.
 

@@ -12,6 +12,7 @@ WP1 created these as skeletons; WP2 wired `FakeBrokerConnection` to the real
 
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import Any, Collection, Sequence
@@ -249,3 +250,31 @@ class RecordingNotifier(Notifier):
 
     def results(self) -> list[Any]:
         return [r for r, _ in self.sends]
+
+
+class RecordingPool:
+    """Synchronous ProcessPoolExecutor fake with optional deferred completion."""
+
+    def __init__(self) -> None:
+        self.submissions: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
+        self.shutdown_args: tuple[bool, bool] | None = None
+        self.deferred = False
+        self.future: Future[Any] | None = None
+        self.submitted: Any = None
+
+    def submit(self, function: Any, *args: Any, **kwargs: Any) -> Future[Any]:
+        self.submissions.append((function, args, kwargs))
+        future: Future[Any] = Future()
+        if self.deferred:
+            self.future = future
+            if self.submitted is not None:
+                self.submitted.set()
+            return future
+        try:
+            future.set_result(function(*args, **kwargs))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        self.shutdown_args = (wait, cancel_futures)

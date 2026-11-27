@@ -4,7 +4,7 @@ Railway Hobby or higher is required. Free is unsupported because this stack need
 
 Railway's repository files cannot completely publish a multi-service template, so this document is the reproducible, reviewable definition used to create the external template.
 
-**External acceptance status: PENDING.** No external template URL or README Deploy button is published. The production-image paper pilot, Railway project verification, backup schedules, and paper-mode restore drill require separately supplied paper credentials and Railway access and were not performed as part of this repository change.
+**External acceptance status: PENDING.** No external template URL or README Deploy button is published. The production-image VPS paper pilot passed on November 27, 2026. The actual Railway project, backup schedules, Railway volume restore, generated-password visibility, networking, and shared-mode redeployment still require Railway access and have not been verified.
 
 ## Template inputs
 

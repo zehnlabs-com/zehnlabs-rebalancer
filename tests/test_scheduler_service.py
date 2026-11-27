@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,30 @@ class FakeScheduler:
 
 
 class SchedulerShutdownTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatch_failure_does_not_log_exception_text(self):
+        secret = "raw-dispatch-secret"
+
+        class FailingWorkManager:
+            async def dispatch_due(self):
+                raise RuntimeError(secret)
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = SQLiteState(Path(directory) / "state.db")
+            state.initialize()
+            logger = logging.getLogger("test_scheduler_safe_logging")
+            service = SchedulerService(
+                state=state,
+                work_manager=FailingWorkManager(),
+                logger=logger,
+            )
+
+            with self.assertLogs(logger.name, level="ERROR") as captured:
+                await service._dispatch()
+
+        output = "\n".join(captured.output)
+        self.assertNotIn(secret, output)
+        self.assertIn("RuntimeError", output)
+
     async def test_stop_waits_for_active_dispatch_before_scheduler_shutdown(self):
         with tempfile.TemporaryDirectory() as directory:
             state = SQLiteState(Path(directory) / "state.db")

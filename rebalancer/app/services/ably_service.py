@@ -190,7 +190,11 @@ class AblyEventSubscriber:
                 RunSource.SIGNAL,
             )
         except Exception as exc:
-            self.logger.error("Failed to handle Signal for Strategy %s: %s", strategy_name, exc)
+            self.logger.error(
+                "Failed to handle Signal for Strategy %s (%s)",
+                strategy_name,
+                type(exc).__name__,
+            )
 
     def _setup_connection_monitoring(self) -> None:
         assert self.ably is not None
@@ -217,12 +221,16 @@ class AblyEventSubscriber:
                     if hasattr(maybe_awaitable, "__await__"):
                         await maybe_awaitable
                 except Exception as exc:
-                    self.logger.warning("Could not unsubscribe from %s: %s", name, exc)
+                    self.logger.warning(
+                        "Could not unsubscribe from %s (%s)",
+                        name,
+                        type(exc).__name__,
+                    )
             self.actual_channels.clear()
             try:
                 await client.close()
             except Exception as exc:
-                self.logger.warning("Could not close Ably: %s", exc)
+                self.logger.warning("Could not close Ably (%s)", type(exc).__name__)
         if self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 

@@ -1,20 +1,56 @@
 # Production-image paper acceptance
 
-Use newly supplied paper credentials and synthetic/temporary local state. Never use the repository's existing `accounts.yaml`, a developer `.env`, or live credentials.
+## Result
 
-Record each result:
+The isolated Oracle VPS paper pilot passed on November 27, 2026. The application image, dashboard, SQLite state, process pool, Zehnlabs allocation access, IBKR paper Gateway, trading calculations, order execution, simulated Signal delivery, forced-process recovery, and backup restore were exercised without changing the production deployment.
 
-1. `./tools/validate.sh` passes, including the Linux production-image fork/descriptor and non-root probes.
-2. Fresh Compose starts exactly two containers; `/login` and `/healthz` work before onboarding; dashboard and Gateway/VNC host bindings remain loopback-only.
-3. Gateway MFA completes and read-only discovery lists only managed paper Accounts without order calls.
-4. Strategy discovery, allocation-access validation, and complete-set save succeed; invalid assignments save nothing.
-5. Every enabled Account Previews successfully with zero broker place/cancel calls.
-6. Initial work runs immediately during market hours or is stored for the exact next configured XNYS time when closed.
-7. Repeated dashboard submissions create one Work Item and one broker execution; pending Preview and rebalance work for one Account dispatch sequentially.
-8. A signal reaches all enabled Accounts for its Strategy and produces SQLite Run history; retry-once behavior remains intact.
-9. Restart preserves Accounts, pending Work Items, and terminal Runs; interrupted work is visible and never replayed.
-10. Disablement, assignment changes, and pending-work cancellation are accurate and do not claim to cancel submitted broker orders.
-11. A SQLite/volume backup restores successfully into paper mode.
-12. Railway-specific deployment proves the exact template contract, generated password visibility, shared staged mode deployment, private Gateway, two backup schedules per volume, manual backups, and a recorded restore drill.
+Railway-specific acceptance remains pending. Do not publish the Deploy to Railway button or present Railway live trading as supported until the actual Railway project passes the final section below.
 
-Do not present the Railway button as supported for live trading until this report is complete. If the Linux fork/descriptor-release probe fails, stop and request authorization before considering any process-start redesign.
+## VPS evidence
+
+The pilot used separately supplied paper credentials, the Compose project `zehnlabs-rebalancer-test`, and its own `rebalancer_state` and `ib_settings` volumes. The production project retained the same container IDs, start times, and zero restart counts throughout testing.
+
+- `./tools/validate.sh` passed with 300 tests, Compose validation, the non-root production image, and the Linux `fork`/descriptor probe. Thirty-two workers retained no listener descriptor.
+- Fresh Compose started exactly `rebalancer` and `ibkr-gateway`. Dashboard, Gateway API, and VNC ports remained bound to host loopback.
+- Gateway authentication, managed paper-Account discovery, Strategy discovery, allocation-access validation, Account save/enable/disable, scheduling, cancellation, Run history, and dashboard restart behavior passed.
+- Four Previews placed and cancelled no orders.
+- Multiple materially different live paper rebalances passed. Mixed Runs completed all sells before placing buys. The final broker state contained 48 filled paper orders, 282 reconciled execution rows, and no working orders.
+- The whole-share optimizer defects exposed by the pilot were fixed and retested successfully, including the final follow-up Preview and rebalance.
+- Repeated submissions remained idempotent, and work for one Account dispatched sequentially.
+- SQLite retained Accounts, Work Items, Runs, and investigation evidence across restarts. A separate restored copy passed SQLite integrity, foreign-key, and typed-model checks with no pending work.
+
+## Signal-path evidence
+
+A production Ably publication was not available on demand, so acceptance used two complementary tests:
+
+1. An automated integration test injects the real Signal JSON into the exact production Ably callback. It routes every enabled Account through the real `StrategyExecutor`, persists `source=signal` Runs in a temporary real SQLite database, and proves that failed live Signal Runs create the durable retry-once Work Items.
+2. On the isolated VPS, an actual `ably.types.message.Message` containing `print-rebalance` was delivered to the same callback. The test used the committed Account registry, production Linux process pool, real Zehnlabs allocations, real paper Gateway, and persistent test SQLite volume. It produced one terminal `source=signal`, `mode=preview`, `PREVIEWED` Run and executed no orders.
+
+This proves the complete application path after Ably delivers a message without publishing an artificial event to production channels. Ably transport authentication and subscription remained part of normal service startup; the controlled test deliberately bypassed only network publication and delivery.
+
+## Forced-interruption evidence
+
+The production image first completed a dashboard Preview to start its normal 32-worker process pool. All worker children were then suspended and a second Preview was submitted. SQLite showed both its Work Item and linked Run as `running` before shutdown.
+
+Docker gave only three seconds for shutdown and then killed the isolated `rebalancer` with exit code 137; the container was not OOM-killed. Before restart, the same Work and Run remained `running` with no finish time, outcome, or result. On startup:
+
+- the same Work Item became `interrupted` with `Interrupted by process restart; not replayed.`;
+- the same linked Run became `interrupted` without a fabricated outcome or result;
+- the dashboard displayed the interrupted state and linked Run;
+- Work and Run counts remained unchanged after the scheduler had time to dispatch and after another restart;
+- IBKR retained zero working orders and the same 282 execution rows.
+
+The test used Preview work, so interruption itself could not place or cancel a broker order.
+
+## Remaining Railway acceptance
+
+The actual Railway installation must still prove all of the following before publication:
+
+1. The external template creates exactly the documented two services and two volumes.
+2. Railway generates a revealable dashboard password and exposes only the dashboard through HTTPS.
+3. The Gateway is reachable only over private networking, and a fresh `ib_settings` volume has working ownership and persistence.
+4. A rebalancer redeploy preserves SQLite state, and a shared `TRADING_MODE` change redeploys both services consistently.
+5. Daily and weekly backup schedules are enabled for both volumes, manual backups work, and both volumes restore successfully into a paper-mode project.
+6. Health checks, restart policies, one replica, one Uvicorn worker, and the documented shutdown period match the template contract.
+
+If the actual Railway project fails any item, keep the button unpublished and correct the design or implementation before retesting.
