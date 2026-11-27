@@ -44,13 +44,23 @@ The test used Preview work, so interruption itself could not place or cancel a b
 
 ## Remaining Railway acceptance
 
-The actual Railway installation must still prove all of the following before publication:
+Between the manually configured Railway reference project and a separate clean project deployed
+only from the finished template URL, the following must still be proved before distribution:
 
-1. The external template creates exactly the documented two services and two volumes.
-2. Railway generates a revealable dashboard password and exposes only the dashboard through HTTPS.
+1. Both projects create exactly the documented two services and two volumes without inherited
+   secrets or registry credentials.
+2. The clean template project receives a Railway-generated, revealable dashboard password and
+   exposes only the dashboard through HTTPS. The reference project uses an owner-generated password.
 3. The Gateway is reachable only over private networking, and a fresh `ib_settings` volume has working ownership and persistence.
 4. A rebalancer redeploy preserves SQLite state, and a shared `TRADING_MODE` change redeploys both services consistently.
-5. Daily and weekly backup schedules are enabled for both volumes, manual backups work, and both volumes restore successfully into a paper-mode project.
-6. Health checks, restart policies, one replica, one Uvicorn worker, and the documented shutdown period match the template contract.
+5. In the reference project, daily and weekly backup schedules are enabled for both volumes, manual
+   backups work, and both volumes restore successfully inside the same paper-only Railway project
+   and environment, which is Railway's supported restore boundary.
+6. The tested multi-platform manifest and Railway-selected platform digest match the pinned
+   Rebalancer source; the Gateway digest matches its approved source; image auto-updates are off for
+   both services.
+7. Health checks, restart policies, one replica, one Uvicorn worker, and the documented shutdown
+   period match the template contract.
 
-If the actual Railway project fails any item, keep the button unpublished and correct the design or implementation before retesting.
+If either project fails its assigned item, keep the button withheld and correct the design or
+implementation before retesting.

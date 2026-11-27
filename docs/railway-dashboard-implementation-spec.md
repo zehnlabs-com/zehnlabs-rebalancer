@@ -474,7 +474,8 @@ Keep the current Gateway release pinned exactly as `gnzsnz/ib-gateway:10.51.1e@s
 
 Provide a Railway template and README Deploy to Railway button that create:
 
-- one `rebalancer` service built from this repository;
+- one `rebalancer` service using the public Zehnlabs GHCR release image, pinned by stable version
+  and immutable multi-platform manifest digest;
 - one pinned stock IBKR Gateway image service;
 - one volume mounted at `/app/state` on `rebalancer`;
 - one volume mounted at the Gateway's existing settings path;
@@ -487,13 +488,20 @@ Provide a Railway template and README Deploy to Railway button that create:
 - `RAILWAY_RUN_UID=0` on `rebalancer`, used only by the privilege-dropping entrypoint;
 - `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=0` and `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=900` on `rebalancer`;
 - Railway's `Always` restart policy on both `rebalancer` and `ibkr-gateway`;
+- disabled Railway image auto-updates on both services;
 - `/healthz` as the rebalancer health-check path.
 
 The template must set or reference `PORT=18778` so its public-domain target, healthcheck, and application listener agree. Documentation must explain in plain language that Railway sends `SIGTERM`, waits up to 15 minutes, and then force-stops a process that has not exited. This grace period covers the configured normal order timeouts but is not a promise that every broker operation can finish before a forced stop.
 
 Railway templates do not guarantee that volume backup schedules are enabled. Add an unavoidable post-deploy checklist that directs the project owner to the Backups tab for each service, enables daily and weekly schedules for both volumes, takes a manual backup before every application or Gateway upgrade, and records a successful paper-mode restore drill. The README must describe Railway as providing backup tooling, not as making backups automatic without this step.
 
-Do not publish Gateway API or VNC publicly. If Railway cannot express the complete multi-service template in a repository file, create the template in Railway and keep a repository document that lists its exact services, images, mounts, variables, references, ports, health checks, and generated-secret expression so it can be reproduced and reviewed.
+Do not publish Gateway API or VNC publicly. The Rebalancer release is built once for `linux/amd64`
+and `linux/arm64`, tested by manifest and platform digest, and promoted without rebuilding. The
+application version is baked into the image; the template must not carry a separate
+`SERVICE_VERSION` setting. If Railway cannot express the complete multi-service template in a
+repository file, create the template in Railway and keep a repository document that lists its exact
+services, images, mounts, variables, references, ports, health checks, auto-update settings, and
+generated-secret expression so it can be reproduced and reviewed.
 
 ## 13. Required automated tests
 
@@ -599,7 +607,10 @@ Use FastAPI's in-process test client with fake discovery, clock, subscriber, exe
 - Compose and the Railway manifest use the exact approved Gateway tag and digest.
 - Compose and Railway pass one identical `TRADING_MODE` value to both services; a Railway mode change is a staged deployment of both.
 - The production health check succeeds before onboarding and does not expose configuration.
-- The Railway template definition or reproducible manifest contains the exact service, volume, variable, `secret(32)`, `RAILWAY_RUN_UID`, port, replica, teardown, restart-policy, image, and health-check contract in section 12.3; the deployment checklist covers backup schedules for both services.
+- The Railway template definition or reproducible manifest contains the exact service, volume,
+  variable, `secret(32)`, `RAILWAY_RUN_UID`, port, replica, teardown, restart-policy, pinned image,
+  disabled auto-update, and health-check contract in section 12.3; the deployment checklist covers
+  backup schedules for both services.
 - Migration tests prove only Account YAML imports; documentation detects/explains changed `config.yaml` values and requires acceptance of code defaults, pending schedules require recreation, manual files never replay, and legacy Run files remain unchanged in the backup.
 
 ## 14. End-to-end acceptance scenarios
@@ -607,7 +618,10 @@ Use FastAPI's in-process test client with fake discovery, clock, subscriber, exe
 The implementation is complete only when all of these scenarios pass:
 
 1. **Fresh VPS installation:** `docker compose up` starts two containers; the dashboard is reachable at `http://localhost:18778` on the host but not through a non-loopback host address; login with `admin` and the `.env` password works; onboarding completes without editing a file.
-2. **Fresh Railway installation:** the Deploy to Railway flow creates the two services and two volumes, generates the admin password, exposes only the dashboard through HTTPS, and preserves state across a rebalancer redeploy.
+2. **Fresh Railway installation:** a manually configured reference project and a separate project
+   created only from the template URL each create the two services and two volumes, use the exact
+   approved image digests with auto-updates off, generate the admin password, expose only the
+   dashboard through HTTPS, and preserve state across a rebalancer redeploy.
 3. **Paper onboarding:** with separately supplied paper credentials, discovery lists the managed paper Accounts and available Strategies; inaccessible Strategies cannot be saved; valid enabled Accounts Preview successfully and initial work runs now or at next market open as stated by the UI.
 4. **Day-to-day operation:** a logged-in user can Preview, rebalance, schedule, cancel pending work, enable/disable Accounts, change assignments, and inspect Run details. Repeated submissions never place duplicate work.
 5. **Signal operation:** allocation signals continue to route to every enabled Account for the Strategy, produce the same trading behavior as before, write Run history to SQLite, and preserve retry-once behavior.

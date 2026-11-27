@@ -145,11 +145,19 @@ The dashboard is not something the subscriber must keep open. Closing the browse
 
 ## Railway experience
 
-The README's Deploy to Railway button opens a template containing exactly the two services. Railway templates can combine a GitHub-built service and a Docker image, attach volumes, define variables, generate a public domain, and configure a healthcheck ([creating templates](https://docs.railway.com/templates/create)).
+The README's Deploy to Railway button opens a template containing exactly the two services. The
+Rebalancer service uses the public Zehnlabs GHCR release image at an exact stable version and
+immutable digest; Railway does not rebuild it from the repository. The Gateway uses its separately
+pinned stock image. Railway templates can attach volumes, define variables, generate a public
+domain, and configure a healthcheck ([creating templates](https://docs.railway.com/templates/create)).
 
 The subscriber supplies the current deployment variables, including IBKR credentials, Zehnlabs API key, and one paper/live mode value referenced by both services. The template generates `DASHBOARD_ADMIN_PASSWORD`, creates one public HTTPS domain for `rebalancer`, attaches the two volumes, sets both long-running services to Railway's `Always` restart policy, and connects them over Railway private networking. Gateway API and VNC are not public. Railway provides private service DNS for this connection ([private networking](https://docs.railway.com/networking/private-networking), [restart policy](https://docs.railway.com/deployments/restart-policy)).
 
 The application listens on Railway's `PORT`, defaulting to `18778` outside Railway. Its healthcheck confirms that the web process and SQLite are usable. Gateway, Ably, or Zehnlabs outages appear inside the dashboard and do not make the web healthcheck fail, because that would remove the interface needed to diagnose them. Railway healthchecks are deployment checks rather than continuous trading monitoring ([healthchecks](https://docs.railway.com/deployments/healthchecks)).
+
+Railway image auto-updates are disabled for both services. Updating the template changes new
+installations only; an existing subscriber remains on the old digest until explicitly upgrading
+after a backup. The canonical release and upgrade procedure is [Railway distribution and release](../railway.md).
 
 Railway variable changes are staged and then deployed, not applied inside an existing container ([variables](https://docs.railway.com/variables), [staged changes](https://docs.railway.com/deployments/staged-changes)). For example, switching from paper to live means changing `TRADING_MODE` and deploying. The new process reads the new mode and activates only Accounts stored for that mode; if none exist, the dashboard returns to onboarding.
 

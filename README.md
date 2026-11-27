@@ -52,7 +52,16 @@ See [Docker operations](docs/docker.md) for backups, upgrades, and multi-instanc
 
 The reviewed Railway template contract is documented in [Railway deployment](docs/railway.md). It creates exactly two one-replica services and two volumes, exposes only the dashboard through HTTPS, and uses private networking for Gateway access.
 
-The public Deploy to Railway button is intentionally withheld until the actual Railway project and its backup/restore procedure pass the remaining checks in [Paper acceptance](docs/paper-acceptance.md). The production-image VPS paper pilot has passed; Railway itself has not yet been verified.
+The template uses a public GHCR Rebalancer release pinned by version and immutable digest. Image
+auto-updates are disabled. A template update changes new installations only; an existing subscriber
+must explicitly select a tested release after taking both volume backups and reviewing its release
+notes.
+
+The Deploy to Railway button is intentionally withheld until the Railway reference project, clean
+template deployment, and backup/restore procedure pass the remaining checks in
+[Paper acceptance](docs/paper-acceptance.md). The template will be shared directly from the README,
+not listed in Railway's public marketplace. The production-image VPS paper pilot has passed;
+Railway itself has not yet been verified.
 
 After any Railway variable change, click **Deploy** to apply the staged change. A `TRADING_MODE` change must redeploy both services from the same shared template input.
 
@@ -63,7 +72,8 @@ Before relying on the installation:
 1. In the `rebalancer` service **Backups** tab, enable daily and weekly schedules for the `/app/state` volume.
 2. In the `ibkr-gateway` service **Backups** tab, enable daily and weekly schedules for its settings volume.
 3. Take a manual backup of both volumes before every application or Gateway upgrade.
-4. Restore a backup into paper mode and record a successful restore drill.
+4. In the paper-only installation, restore both backups in the same Railway project and environment
+   and record a successful restore drill. Railway backups cannot be restored into another project.
 
 Railway provides backup tooling; templates do not guarantee that backup schedules are enabled.
 
